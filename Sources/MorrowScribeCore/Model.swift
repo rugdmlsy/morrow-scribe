@@ -96,7 +96,7 @@ public struct TranscriptEntry: Codable, Hashable, Sendable {
 
 public struct MeetingMetadata: Codable, Hashable, Sendable {
     public let id: UUID
-    public let title: String
+    public var title: String
     public let platform: String
     public let startedAt: Date
     public var endedAt: Date?

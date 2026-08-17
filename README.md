@@ -54,6 +54,7 @@ The GUI provides:
 - Start / stop Slack Huddle transcription
 - Side-by-side captions by default, with overlay caption fallback
 - Saved meeting browser backed by `~/Library/Application Support/Morrow Scribe/meetings/`
+- Right-click meeting menu for Rename and Delete (with deletion confirmation)
 - Transcript and summary content views
 - Reveal a meeting directory in Finder
 - Manual `Generate Summary` and `Auto summary` controls when an OpenAI-compatible LLM is configured

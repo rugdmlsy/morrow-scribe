@@ -162,6 +162,44 @@ final class ScribeViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
 
+    func canModifyMeeting(_ meeting: SavedMeeting) -> Bool {
+        meeting.directory.standardizedFileURL != activeMeetingDirectory?.standardizedFileURL
+    }
+
+    func renameMeeting(_ meeting: SavedMeeting, to title: String) {
+        guard canModifyMeeting(meeting) else {
+            errorText = "Stop the active transcription before renaming this meeting."
+            return
+        }
+        do {
+            let newDirectory = try MeetingLibrary.renameMeeting(at: meeting.directory, to: title)
+            if selectedMeetingID == meeting.id {
+                selectedMeetingID = newDirectory.path
+            }
+            statusText = "Meeting renamed"
+            refreshLibraryKeepingSelection()
+            selectedMeetingID = newDirectory.path
+        } catch {
+            errorText = "Could not rename meeting: \(error)"
+        }
+    }
+
+    func deleteMeeting(_ meeting: SavedMeeting) {
+        guard canModifyMeeting(meeting) else {
+            errorText = "Stop the active transcription before deleting this meeting."
+            return
+        }
+        do {
+            let wasSelected = selectedMeetingID == meeting.id
+            try MeetingLibrary.deleteMeeting(at: meeting.directory)
+            if wasSelected { selectedMeetingID = nil }
+            statusText = "Meeting deleted"
+            refreshLibraryKeepingSelection()
+        } catch {
+            errorText = "Could not delete meeting: \(error)"
+        }
+    }
+
     func summarizeSelected() {
         guard let directory = selectedMeeting?.directory else { return }
         Task { await summarize(directory: directory) }
@@ -199,6 +237,11 @@ final class ScribeViewModel: ObservableObject {
 
 struct ContentView: View {
     @ObservedObject var model: ScribeViewModel
+    @State private var renameMeetingID: String?
+    @State private var renameTitle = ""
+    @State private var deleteMeetingID: String?
+    @State private var showRenameSheet = false
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         NavigationSplitView {
@@ -215,6 +258,26 @@ struct ContentView: View {
             Button("OK") { model.errorText = nil }
         } message: {
             Text(model.errorText ?? "")
+        }
+        .sheet(isPresented: $showRenameSheet) {
+            renameSheet
+        }
+        .confirmationDialog(
+            "Delete this meeting?",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Meeting", role: .destructive) {
+                if let meeting = meeting(withID: deleteMeetingID) {
+                    model.deleteMeeting(meeting)
+                }
+                deleteMeetingID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                deleteMeetingID = nil
+            }
+        } message: {
+            Text("This permanently removes the meeting directory, transcript, summary, and diagnostic files.")
         }
     }
 
@@ -254,6 +317,26 @@ struct ContentView: View {
                 }
                 .padding(.vertical, 3)
                 .tag(meeting.id)
+                .contextMenu {
+                    Button {
+                        renameMeetingID = meeting.id
+                        renameTitle = meeting.metadata.title
+                        showRenameSheet = true
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .disabled(!model.canModifyMeeting(meeting))
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        deleteMeetingID = meeting.id
+                        showDeleteConfirmation = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .disabled(!model.canModifyMeeting(meeting))
+                }
             }
             .listStyle(.sidebar)
         }
@@ -290,6 +373,50 @@ struct ContentView: View {
                 description: Text("Start a transcription or select a saved meeting.")
             )
         }
+    }
+
+    private func meeting(withID id: String?) -> SavedMeeting? {
+        guard let id else { return nil }
+        return model.meetings.first { $0.id == id }
+    }
+
+    private var renameSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rename Meeting")
+                .font(.headline)
+            TextField("Meeting name", text: $renameTitle)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 360)
+                .onSubmit { confirmRename() }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    showRenameSheet = false
+                    renameMeetingID = nil
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Rename") {
+                    confirmRename()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 410)
+    }
+
+    private func confirmRename() {
+        guard let meeting = meeting(withID: renameMeetingID) else {
+            showRenameSheet = false
+            renameMeetingID = nil
+            return
+        }
+        model.renameMeeting(meeting, to: renameTitle)
+        showRenameSheet = false
+        renameMeetingID = nil
     }
 
     private func meetingHeader(_ meeting: SavedMeeting) -> some View {

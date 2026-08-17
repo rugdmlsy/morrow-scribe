@@ -125,6 +125,21 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("meeting library")
 
+        let originalDirectory = library[0].directory
+        let renamedDirectory = try MeetingLibrary.renameMeeting(at: originalDirectory, to: "Renamed Meeting")
+        guard renamedDirectory != originalDirectory,
+              !FileManager.default.fileExists(atPath: originalDirectory.path),
+              let renamed = try MeetingLibrary.loadMeeting(at: renamedDirectory),
+              renamed.metadata.title == "Renamed Meeting",
+              renamed.transcript.hasPrefix("# Renamed Meeting") else {
+            throw SelfTestError.failed("meeting rename did not update directory, metadata, and transcript heading")
+        }
+        try MeetingLibrary.deleteMeeting(at: renamedDirectory)
+        guard !FileManager.default.fileExists(atPath: renamedDirectory.path) else {
+            throw SelfTestError.failed("meeting delete left the meeting directory behind")
+        }
+        passed.append("meeting rename/delete")
+
         return passed
     }
 }
