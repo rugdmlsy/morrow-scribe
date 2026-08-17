@@ -64,10 +64,9 @@ public protocol RecordingProvider: Sendable {
 }
 
 public enum RecordingProviderCatalog {
-    /// Providers enabled for normal recording sessions. Add future providers (for example
-    /// ZoomRecordingProvider) here once their capture implementation is available.
+    /// Providers enabled for normal recording sessions.
     public static func defaultProviders() -> [any RecordingProvider] {
-        [SlackRecordingProvider()]
+        [SlackRecordingProvider(), ZoomRecordingProvider()]
     }
 }
 

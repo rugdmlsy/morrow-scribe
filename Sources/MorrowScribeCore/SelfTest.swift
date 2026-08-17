@@ -61,6 +61,26 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("caption source preference")
 
+        let zoomCaptionNodes = [
+            AXSnapshotNode(path: "z", depth: 0, role: "AXWindow", title: "Zoom会议", value: "", description: "", identifier: "", parentPath: nil),
+            AXSnapshotNode(path: "z.1", depth: 1, role: "AXTable", title: "", value: "", description: "字幕", identifier: "", parentPath: "z"),
+            AXSnapshotNode(path: "z.1.0", depth: 2, role: "AXGroup", title: "", value: "", description: "", identifier: "", parentPath: "z.1"),
+            AXSnapshotNode(path: "z.1.0.0", depth: 3, role: "AXGroup", title: "", value: "", description: "", identifier: "", parentPath: "z.1.0"),
+            AXSnapshotNode(path: "z.1.0.0.0", depth: 4, role: "AXStaticText", title: "", value: "wu wu", description: "", identifier: "", parentPath: "z.1.0.0"),
+            AXSnapshotNode(path: "z.1.0.0.1", depth: 4, role: "AXStaticText", title: "", value: "Hello hello. okay?", description: "", identifier: "", parentPath: "z.1.0.0"),
+        ]
+        let zoomCandidates = ZoomCaptionHeuristics.extractCandidates(from: zoomCaptionNodes)
+        guard ZoomAXSession.isMeetingWindowTitle("Zoom会议"),
+              ZoomAXSession.isMeetingWindowTitle("Zoom Meeting"),
+              ZoomCaptionHeuristics.hasCaptionSurface(in: zoomCaptionNodes),
+              zoomCandidates.count == 1,
+              zoomCandidates[0].speaker == "wu wu",
+              zoomCandidates[0].text == "Hello hello. okay?",
+              zoomCandidates[0].source == .zoomNative else {
+            throw SelfTestError.failed("Zoom native caption Accessibility parser failed")
+        }
+        passed.append("Zoom native caption parser")
+
         func candidate(_ speaker: String, _ text: String, _ path: String) -> CaptionCandidate {
             CaptionCandidate(speaker: speaker, text: text, confidence: 1, sourcePath: path)
         }

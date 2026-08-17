@@ -44,7 +44,9 @@ Transcript JSONL records the actual source per utterance as `slack_ax_side_by_si
 
 A recording is intentionally longer-lived than any individual meeting-app attachment. Pressing **Start** creates one `MeetingStore` immediately and starts a `RecordingSession`. The session repeatedly probes its configured `RecordingProvider`s, attaches to an active source, appends transcript entries, and returns to monitoring when that source disappears. Only pressing **Stop** ends the store and, when enabled, triggers the final summary.
 
-The current default provider is Slack. `SlackRecordingProvider` keeps its recent caption-buffer state across Huddle detach/re-attach, so a persistent side-by-side transcript can be aligned instead of replayed. A future `ZoomRecordingProvider` can implement the same `RecordingProvider` contract and be added to the provider list; switching Slack → Zoom would then continue writing the same `transcript.jsonl` and final summary. Each transcript row already carries a source identifier.
+The default providers are Slack and Zoom. `SlackRecordingProvider` reads Slack Huddle captions; `ZoomRecordingProvider` reads Zoom's native live-caption Accessibility table directly, without RTMS, audio capture, or a second STT engine. Both providers retain their recent caption-buffer state across detach/re-attach, so switching Slack → Zoom → Slack continues writing the same `transcript.jsonl` and final summary. Each transcript row carries a source identifier.
+
+Zoom captions must be enabled in the Zoom meeting UI. On Zoom Workplace 7.1.0 for macOS, the live caption surface is exposed as an `AXTable` named `字幕`/`Captions`; each utterance exposes speaker and caption text as native `AXStaticText` children. Scribe reads that structure passively and does not foreground Zoom or request RTMS access.
 
 ## macOS GUI
 
