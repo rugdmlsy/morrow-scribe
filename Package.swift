@@ -7,9 +7,11 @@ let package = Package(
     products: [
         .library(name: "MorrowScribeCore", targets: ["MorrowScribeCore"]),
         .executable(name: "morrow-scribe", targets: ["morrow-scribe"]),
+        .executable(name: "MorrowScribeApp", targets: ["MorrowScribeApp"]),
     ],
     targets: [
         .target(name: "MorrowScribeCore"),
         .executableTarget(name: "morrow-scribe", dependencies: ["MorrowScribeCore"]),
+        .executableTarget(name: "MorrowScribeApp", dependencies: ["MorrowScribeCore"]),
     ]
 )

@@ -18,6 +18,13 @@ public enum SummaryError: Error, CustomStringConvertible {
 }
 
 public enum SummaryClient {
+    public static var isConfigured: Bool {
+        let env = ProcessInfo.processInfo.environment
+        guard let base = env["MORROW_SCRIBE_LLM_BASE_URL"],
+              let model = env["MORROW_SCRIBE_LLM_MODEL"] else { return false }
+        return !base.isEmpty && !model.isEmpty
+    }
+
     public static func summarize(prompt: String) async throws -> String {
         let env = ProcessInfo.processInfo.environment
         guard let base = env["MORROW_SCRIBE_LLM_BASE_URL"],

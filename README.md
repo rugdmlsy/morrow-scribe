@@ -39,6 +39,27 @@ swift run morrow-scribe summarize "~/Library/Application Support/Morrow Scribe/m
 
 Transcript JSONL records the actual source per utterance as `slack_ax_side_by_side`, `slack_ax_overlay`, or the generic compatibility fallback.
 
+
+## macOS GUI
+
+Morrow Scribe also includes a native SwiftUI app. Build/install the local app bundle with:
+
+```bash
+./Scripts/build-app.sh
+open "$HOME/Applications/Morrow Scribe.app"
+```
+
+The GUI provides:
+
+- Start / stop Slack Huddle transcription
+- Side-by-side captions by default, with overlay caption fallback
+- Saved meeting browser backed by `~/Library/Application Support/Morrow Scribe/meetings/`
+- Transcript and summary content views
+- Reveal a meeting directory in Finder
+- Manual `Generate Summary` and `Auto summary` controls when an OpenAI-compatible LLM is configured
+
+Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**.
+
 ## Summary provider
 
 Set:

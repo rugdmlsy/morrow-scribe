@@ -32,6 +32,12 @@ public final class SlackAXSession: @unchecked Sendable {
         AXIsProcessTrusted()
     }
 
+    @discardableResult
+    public static func requestAccessibilityAccess() -> Bool {
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
     public func bootstrap(restoreFocus: Bool = true) throws {
         guard accessibilityTrusted else { throw SlackAXError.accessibilityNotTrusted }
         guard let slack = NSRunningApplication.runningApplications(

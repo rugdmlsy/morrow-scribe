@@ -89,6 +89,16 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("caption stream diff")
 
+        let control = CollectorControl()
+        guard !control.isStopRequested else {
+            throw SelfTestError.failed("collector control started stopped")
+        }
+        control.stop()
+        guard control.isStopRequested else {
+            throw SelfTestError.failed("collector control did not stop")
+        }
+        passed.append("collector control")
+
         let entries = [TranscriptEntry(sequence: 1, speaker: "Alice", text: "We will ship Friday.", confidence: 1)]
         let prompt = MeetingExport.summaryPrompt(entries: entries)
         guard prompt.contains("## Decisions"), prompt.contains("## Action Items"), prompt.contains("[Alice] We will ship Friday.") else {
@@ -106,6 +116,14 @@ public enum MorrowScribeSelfTest {
             throw SelfTestError.failed("meeting store round-trip failed")
         }
         passed.append("meeting store round-trip")
+
+        let library = try MeetingLibrary.loadAll(root: tmp)
+        guard library.count == 1,
+              library[0].metadata.title == "Self Test",
+              library[0].transcript.contains("Alice") else {
+            throw SelfTestError.failed("meeting library failed to load saved meeting")
+        }
+        passed.append("meeting library")
 
         return passed
     }

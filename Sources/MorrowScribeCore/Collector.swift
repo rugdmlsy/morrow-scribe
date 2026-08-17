@@ -17,11 +17,18 @@ public final class SlackCaptionCollector: @unchecked Sendable {
     private let store: MeetingStore
     private let accumulator = TranscriptAccumulator()
     private let options: CollectorOptions
+    private let control: CollectorControl
 
-    public init(session: SlackAXSession, store: MeetingStore, options: CollectorOptions) {
+    public init(
+        session: SlackAXSession,
+        store: MeetingStore,
+        options: CollectorOptions,
+        control: CollectorControl = CollectorControl()
+    ) {
         self.session = session
         self.store = store
         self.options = options
+        self.control = control
     }
 
     public func run(onStatus: ((String) -> Void)? = nil) throws {
@@ -55,8 +62,10 @@ public final class SlackCaptionCollector: @unchecked Sendable {
         if let lastSource { onStatus?("caption source: \(lastSource.rawValue)") }
 
         while true {
+            if control.isStopRequested { break }
             if let duration = options.duration, Date().timeIntervalSince(started) >= duration { break }
             Thread.sleep(forTimeInterval: options.pollInterval)
+            if control.isStopRequested { break }
 
             do {
                 try session.ensureFresh()
