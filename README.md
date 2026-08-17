@@ -4,13 +4,17 @@ Slack-native meeting transcription and summarization for macOS.
 
 The first backend reads Slack Huddle live captions through macOS Accessibility instead of recording audio. Slack remains responsible for ASR and speaker attribution; Morrow Scribe persists a structured transcript and can send it to any OpenAI-compatible summarizer.
 
+For Slack, the collector prefers the persistent **side-by-side captions** transcript. If that surface is unavailable, it falls back to the transient overlay/hidden captions.
+
 Slack Desktop 4.51.180 was validated end to end: each live-caption utterance is exposed as three direct Accessibility text nodes — `speaker`, `:`, `caption text`. The collector parses that native structure directly.
 
 ## Pipeline
 
 ```text
 Slack Huddle
-  -> Slack live captions / native speaker labels
+  -> side-by-side caption transcript (preferred)
+     -> overlay/hidden captions (fallback)
+  -> Slack native speaker labels
   -> macOS Accessibility
   -> Morrow Scribe collector
   -> meeting.json + transcript.jsonl + transcript.md + ax-events.jsonl
@@ -31,7 +35,9 @@ swift run morrow-scribe export "~/Library/Application Support/Morrow Scribe/meet
 swift run morrow-scribe summarize "~/Library/Application Support/Morrow Scribe/meetings/..."
 ```
 
-`huddle auto-captions-on` enables Slack's persistent “automatically turn on captions” preference. `--learn` records changed Accessibility text nodes and ancestor context to `ax-events.jsonl`. This is intentionally kept in the MVP so Slack UI changes can be diagnosed without audio/OCR.
+`huddle auto-captions-on` enables Slack's persistent “automatically turn on captions” preference. `collect` attempts to select Slack's side-by-side caption tab at startup. It retries the semantic Accessibility control, then continues without failing if the control is unavailable; in that case the parser falls back to overlay captions when present. `--learn` records changed Accessibility text nodes and ancestor context to `ax-events.jsonl`. This is intentionally kept in the MVP so Slack UI changes can be diagnosed without audio/OCR.
+
+Transcript JSONL records the actual source per utterance as `slack_ax_side_by_side`, `slack_ax_overlay`, or the generic compatibility fallback.
 
 ## Summary provider
 

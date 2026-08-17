@@ -11,7 +11,8 @@ public final class TranscriptAccumulator: @unchecked Sendable {
             speaker: candidate.speaker?.trimmingCharacters(in: .whitespacesAndNewlines),
             text: candidate.text.trimmingCharacters(in: .whitespacesAndNewlines),
             confidence: candidate.confidence,
-            sourcePath: candidate.sourcePath
+            sourcePath: candidate.sourcePath,
+            source: candidate.source
         )
         guard !normalized.text.isEmpty else { return nil }
 
@@ -49,6 +50,7 @@ public final class TranscriptAccumulator: @unchecked Sendable {
             observedAt: date,
             speaker: candidate.speaker,
             text: candidate.text,
+            source: candidate.source.rawValue,
             confidence: candidate.confidence
         )
     }

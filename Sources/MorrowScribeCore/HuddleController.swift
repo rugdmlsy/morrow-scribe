@@ -8,6 +8,7 @@ public enum HuddleControllerError: Error, CustomStringConvertible {
     case noHuddleWindow
     case noHuddleToolbar
     case noPreferencesControl
+    case noCaptionViewControl
 
     public var description: String {
         switch self {
@@ -16,19 +17,32 @@ public enum HuddleControllerError: Error, CustomStringConvertible {
         case .noHuddleWindow: return "no active Slack Huddle window"
         case .noHuddleToolbar: return "active Huddle has no accessible Huddle toolbar"
         case .noPreferencesControl: return "Slack automatic-caption preference was not found"
+        case .noCaptionViewControl: return "Slack side-by-side caption view control was not found"
         }
     }
+}
+
+public enum CaptionDisplayMode: String, Sendable {
+    case sideBySide = "side_by_side"
+    case overlay = "overlay"
 }
 
 public struct HuddleStatus: Sendable {
     public let active: Bool
     public let windowTitle: String?
     public let captionsEnabled: Bool?
+    public let captionMode: CaptionDisplayMode?
 
-    public init(active: Bool, windowTitle: String?, captionsEnabled: Bool?) {
+    public init(
+        active: Bool,
+        windowTitle: String?,
+        captionsEnabled: Bool?,
+        captionMode: CaptionDisplayMode? = nil
+    ) {
         self.active = active
         self.windowTitle = windowTitle
         self.captionsEnabled = captionsEnabled
+        self.captionMode = captionMode
     }
 }
 
@@ -49,8 +63,42 @@ public final class SlackHuddleController: @unchecked Sendable {
         return HuddleStatus(
             active: true,
             windowTitle: stringAttribute(huddle, kAXTitleAttribute as CFString),
-            captionsEnabled: captionsAreActive(in: huddle)
+            captionsEnabled: captionsAreActive(in: huddle),
+            captionMode: captionDisplayMode(in: huddle)
         )
+    }
+
+    /// Select Slack's persistent side-by-side transcript as the preferred Huddle view.
+    /// The collector treats failure here as non-fatal and falls back to overlay captions.
+    @discardableResult
+    public func preferSideBySideCaptions() throws -> Bool {
+        let context = try bootstrapSlack(waitForHuddle: true)
+        defer { restore(context) }
+        guard let huddle = preferredHuddleWindow(in: context.windows) else {
+            throw HuddleControllerError.noHuddleWindow
+        }
+        _ = AXUIElementPerformAction(huddle, kAXRaiseAction as CFString)
+        var captionsTab: AXUIElement?
+        for _ in 0..<10 {
+            captionsTab = find(huddle, where: { element in
+                guard stringAttribute(element, kAXRoleAttribute as CFString) == "AXRadioButton" else { return false }
+                let title = stringAttribute(element, kAXTitleAttribute as CFString).lowercased()
+                return title == "字幕" || title == "captions"
+            })
+            if captionsTab != nil { break }
+            Thread.sleep(forTimeInterval: 0.10)
+        }
+        guard let captionsTab else {
+            throw HuddleControllerError.noCaptionViewControl
+        }
+        if stringAttribute(captionsTab, kAXValueAttribute as CFString) != "1" {
+            _ = AXUIElementPerformAction(captionsTab, kAXPressAction as CFString)
+            for _ in 0..<8 {
+                Thread.sleep(forTimeInterval: 0.10)
+                if stringAttribute(captionsTab, kAXValueAttribute as CFString) == "1" { break }
+            }
+        }
+        return stringAttribute(captionsTab, kAXValueAttribute as CFString) == "1"
     }
 
     /// Enable Slack's persistent "automatically turn on captions" Huddle preference.
@@ -162,6 +210,17 @@ public final class SlackHuddleController: @unchecked Sendable {
         windows.first(where: {
             stringAttribute($0, kAXTitleAttribute as CFString).hasPrefix("抱团：")
         })
+    }
+
+    private func captionDisplayMode(in huddle: AXUIElement) -> CaptionDisplayMode? {
+        if let captionsTab = find(huddle, where: { element in
+            guard stringAttribute(element, kAXRoleAttribute as CFString) == "AXRadioButton" else { return false }
+            let title = stringAttribute(element, kAXTitleAttribute as CFString).lowercased()
+            return title == "字幕" || title == "captions"
+        }), stringAttribute(captionsTab, kAXValueAttribute as CFString) == "1" {
+            return .sideBySide
+        }
+        return captionsAreActive(in: huddle) ? .overlay : nil
     }
 
     private func captionsAreActive(in huddle: AXUIElement) -> Bool {

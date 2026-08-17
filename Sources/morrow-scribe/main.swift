@@ -55,6 +55,10 @@ struct MorrowScribeCLI {
         print("ax_nodes=\(nodes.count)")
         let huddle = nodes.filter(CaptionHeuristics.isHuddleRelated)
         print("huddle_related_nodes=\(huddle.count)")
+        let preferred = CaptionHeuristics.preferredSource(from: nodes)
+        print("caption_source=\(preferred?.rawValue ?? "unavailable")")
+        print("side_by_side_candidates=\(CaptionHeuristics.extractSideBySideCandidates(from: nodes).count)")
+        print("overlay_candidates=\(CaptionHeuristics.extractOverlayCandidates(from: nodes).count)")
         print("caption_candidates=\(CaptionHeuristics.extractCandidates(from: nodes).count)")
     }
 
@@ -99,6 +103,9 @@ struct MorrowScribeCLI {
             print("active=\(state.active)")
             if let title = state.windowTitle { print("window=\(title)") }
             if let captions = state.captionsEnabled { print("captions_enabled=\(captions)") }
+            if let mode = state.captionMode { print("caption_mode=\(mode.rawValue)") }
+        case "side-by-side":
+            print("side_by_side=\(try controller.preferSideBySideCaptions())")
         case "auto-captions-on":
             print("auto_captions_enabled=\(try controller.enableAutomaticCaptionsPreference())")
         case "leave":
@@ -145,7 +152,7 @@ struct MorrowScribeCLI {
           morrow-scribe status
           morrow-scribe snapshot [--match TEXT]
           morrow-scribe collect [--title TITLE] [--duration SEC] [--poll SEC] [--learn] [--output DIR]
-          morrow-scribe huddle [status|auto-captions-on|leave]
+          morrow-scribe huddle [status|side-by-side|auto-captions-on|leave]
           morrow-scribe export MEETING_DIR
           morrow-scribe summarize MEETING_DIR
 

@@ -38,17 +38,31 @@ public struct AXSnapshotNode: Codable, Hashable, Sendable {
     }
 }
 
+public enum CaptionSource: String, Codable, Hashable, Sendable {
+    case slackSideBySide = "slack_ax_side_by_side"
+    case slackOverlay = "slack_ax_overlay"
+    case slackGeneric = "slack_ax_generic"
+}
+
 public struct CaptionCandidate: Codable, Hashable, Sendable {
     public let speaker: String?
     public let text: String
     public let confidence: Double
     public let sourcePath: String
+    public let source: CaptionSource
 
-    public init(speaker: String?, text: String, confidence: Double, sourcePath: String) {
+    public init(
+        speaker: String?,
+        text: String,
+        confidence: Double,
+        sourcePath: String,
+        source: CaptionSource = .slackGeneric
+    ) {
         self.speaker = speaker
         self.text = text
         self.confidence = confidence
         self.sourcePath = sourcePath
+        self.source = source
     }
 }
 

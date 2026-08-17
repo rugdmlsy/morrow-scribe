@@ -27,17 +27,39 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("transcript accumulator")
 
-        let nodes = [
+        let overlayNodes = [
             AXSnapshotNode(path: "0", depth: 0, role: "AXGroup", title: "", value: "", description: "", identifier: "", parentPath: nil),
             AXSnapshotNode(path: "0.0", depth: 1, role: "AXStaticText", title: "", value: "Alice", description: "", identifier: "", parentPath: "0"),
             AXSnapshotNode(path: "0.1", depth: 1, role: "AXStaticText", title: "", value: ":", description: "", identifier: "", parentPath: "0"),
-            AXSnapshotNode(path: "0.2", depth: 1, role: "AXStaticText", title: "", value: "hello world", description: "", identifier: "", parentPath: "0"),
+            AXSnapshotNode(path: "0.2", depth: 1, role: "AXStaticText", title: "", value: "overlay text", description: "", identifier: "", parentPath: "0"),
         ]
-        let candidates = CaptionHeuristics.extractCandidates(from: nodes)
-        guard candidates.contains(where: { $0.speaker == "Alice" && $0.text == "hello world" }) else {
-            throw SelfTestError.failed("caption heuristic failed to pair speaker and caption")
+        let overlayCandidates = CaptionHeuristics.extractCandidates(from: overlayNodes)
+        guard overlayCandidates.count == 1,
+              overlayCandidates[0].speaker == "Alice",
+              overlayCandidates[0].text == "overlay text",
+              overlayCandidates[0].source == .slackOverlay else {
+            throw SelfTestError.failed("overlay caption fallback failed")
         }
-        passed.append("caption heuristic")
+
+        let sideBySideNodes = [
+            AXSnapshotNode(path: "1", depth: 0, role: "AXGroup", title: "", value: "字幕", description: "", identifier: "", parentPath: nil),
+            AXSnapshotNode(path: "1.0", depth: 1, role: "AXList", title: "", value: "转录", description: "", identifier: "", parentPath: "1"),
+            AXSnapshotNode(path: "1.0.0", depth: 2, role: "AXGroup", title: "", value: "", description: "", identifier: "", parentPath: "1.0"),
+            AXSnapshotNode(path: "1.0.0.0", depth: 3, role: "AXStaticText", title: "", value: "字幕正在以English (US)生成。", description: "", identifier: "", parentPath: "1.0.0"),
+            AXSnapshotNode(path: "1.0.1", depth: 2, role: "AXGroup", title: "", value: "", description: "", identifier: "", parentPath: "1.0"),
+            AXSnapshotNode(path: "1.0.1.1.0", depth: 4, role: "AXStaticText", title: "", value: "Alice", description: "", identifier: "", parentPath: "1.0.1.1"),
+            AXSnapshotNode(path: "1.0.1.2.0", depth: 4, role: "AXStaticText", title: "", value: "persistent text", description: "", identifier: "", parentPath: "1.0.1.2"),
+        ]
+        let preferredNodes = overlayNodes + sideBySideNodes
+        let preferredCandidates = CaptionHeuristics.extractCandidates(from: preferredNodes)
+        guard preferredCandidates.count == 1,
+              preferredCandidates[0].speaker == "Alice",
+              preferredCandidates[0].text == "persistent text",
+              preferredCandidates[0].source == .slackSideBySide,
+              CaptionHeuristics.preferredSource(from: preferredNodes) == .slackSideBySide else {
+            throw SelfTestError.failed("side-by-side captions were not preferred over overlay")
+        }
+        passed.append("caption source preference")
 
         func candidate(_ speaker: String, _ text: String, _ path: String) -> CaptionCandidate {
             CaptionCandidate(speaker: speaker, text: text, confidence: 1, sourcePath: path)
@@ -53,6 +75,17 @@ public enum MorrowScribeSelfTest {
         let partialDelta = CaptionStream.delta(previous: partialOld, current: partialNew)
         guard partialDelta.count == 1, partialDelta[0].text == "hello world" else {
             throw SelfTestError.failed("caption rolling-buffer diff missed a growing partial")
+        }
+        let overlayHistory = [candidate("Alice", "two", "o0"), candidate("Bob", "three", "o1")]
+        let persistentHistory = [
+            candidate("Alice", "one", "s0"),
+            candidate("Alice", "two", "s1"),
+            candidate("Bob", "three", "s2"),
+            candidate("Bob", "four", "s3"),
+        ]
+        let switchedDelta = CaptionStream.delta(previous: overlayHistory, current: persistentHistory)
+        guard switchedDelta.count == 1, switchedDelta[0].text == "four" else {
+            throw SelfTestError.failed("overlay-to-side-by-side switch replayed persistent history")
         }
         passed.append("caption stream diff")
 

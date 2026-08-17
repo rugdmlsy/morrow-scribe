@@ -25,12 +25,34 @@ public final class SlackCaptionCollector: @unchecked Sendable {
     }
 
     public func run(onStatus: ((String) -> Void)? = nil) throws {
+        var sideBySideSelected = false
+        var lastPreferenceError: Error?
+        for attempt in 0..<4 {
+            do {
+                if try SlackHuddleController().preferSideBySideCaptions() {
+                    sideBySideSelected = true
+                    break
+                }
+            } catch {
+                lastPreferenceError = error
+            }
+            if attempt < 3 { Thread.sleep(forTimeInterval: 0.20) }
+        }
+        if sideBySideSelected {
+            onStatus?("caption preference: side-by-side")
+        } else {
+            let detail = lastPreferenceError.map { ": \($0)" } ?? ""
+            onStatus?("side-by-side unavailable; using overlay fallback when present\(detail)")
+        }
+
         try session.bootstrap()
         onStatus?("attached to Slack pid=\(session.slackPID ?? 0), window=\(try session.windowTitle())")
 
         var previous = try session.snapshot()
         let started = Date()
         var previousCandidates: [CaptionCandidate] = []
+        var lastSource = CaptionHeuristics.preferredSource(from: previous)
+        if let lastSource { onStatus?("caption source: \(lastSource.rawValue)") }
 
         while true {
             if let duration = options.duration, Date().timeIntervalSince(started) >= duration { break }
@@ -60,6 +82,11 @@ public final class SlackCaptionCollector: @unchecked Sendable {
                 }
 
                 let candidates = CaptionHeuristics.extractCandidates(from: current)
+                let source = CaptionHeuristics.preferredSource(from: current)
+                if source != lastSource {
+                    onStatus?("caption source: \(source?.rawValue ?? "unavailable")")
+                    lastSource = source
+                }
                 let delta = CaptionStream.delta(previous: previousCandidates, current: candidates)
                 let now = Date()
                 for candidate in delta {
