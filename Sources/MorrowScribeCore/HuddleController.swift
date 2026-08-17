@@ -68,6 +68,31 @@ public final class SlackHuddleController: @unchecked Sendable {
         )
     }
 
+    /// Fast monitoring path for long-lived recording sessions. Unlike `status()`, this does
+    /// not foreground Slack and does not wait for a Huddle to appear. Slack not running is
+    /// treated as an inactive source rather than an error so recording can begin first.
+    public func passiveStatus() throws -> HuddleStatus {
+        guard AXIsProcessTrusted() else { throw HuddleControllerError.accessibilityNotTrusted }
+        guard let slack = NSRunningApplication.runningApplications(
+            withBundleIdentifier: SlackAXSession.slackBundleIdentifier
+        ).first else {
+            return HuddleStatus(active: false, windowTitle: nil, captionsEnabled: nil)
+        }
+
+        let app = AXUIElementCreateApplication(slack.processIdentifier)
+        _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute as CFString) ?? []
+        guard let huddle = preferredHuddleWindow(in: windows) else {
+            return HuddleStatus(active: false, windowTitle: nil, captionsEnabled: nil)
+        }
+        return HuddleStatus(
+            active: true,
+            windowTitle: stringAttribute(huddle, kAXTitleAttribute as CFString),
+            captionsEnabled: nil,
+            captionMode: nil
+        )
+    }
+
     /// Select Slack's persistent side-by-side transcript as the preferred Huddle view.
     /// The collector treats failure here as non-fatal and falls back to overlay captions.
     @discardableResult
@@ -207,8 +232,9 @@ public final class SlackHuddleController: @unchecked Sendable {
     }
 
     private func preferredHuddleWindow(in windows: [AXUIElement]) -> AXUIElement? {
-        windows.first(where: {
-            stringAttribute($0, kAXTitleAttribute as CFString).hasPrefix("抱团：")
+        windows.first(where: { element in
+            let title = stringAttribute(element, kAXTitleAttribute as CFString)
+            return SlackAXSession.isHuddleWindowTitle(title)
         })
     }
 

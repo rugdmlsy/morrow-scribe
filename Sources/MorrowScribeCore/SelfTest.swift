@@ -140,6 +140,101 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("meeting rename/delete")
 
+        let sessionRoot = tmp.appendingPathComponent("session", isDirectory: true)
+        let sessionStore = try MeetingStore(title: "Cross Provider", baseDirectory: sessionRoot)
+        let sessionControl = CollectorControl()
+        let slackProvider = SelfTestRecordingProvider(
+            id: "slack",
+            displayName: "Slack",
+            source: .slackGeneric,
+            text: "Slack segment",
+            stopAfterAttachment: false
+        )
+        let zoomProvider = SelfTestRecordingProvider(
+            id: "zoom",
+            displayName: "Zoom",
+            source: .zoomNative,
+            text: "Zoom segment",
+            stopAfterAttachment: true
+        )
+        var recordingStatuses: [String] = []
+        let recording = RecordingSession(
+            store: sessionStore,
+            providers: [slackProvider, zoomProvider],
+            control: sessionControl,
+            options: CollectorOptions(monitorInterval: 0.10)
+        )
+        try recording.run { recordingStatuses.append($0) }
+        let crossProviderEntries = try MeetingExport.transcriptEntries(in: sessionStore.directory)
+        guard crossProviderEntries.count == 2,
+              crossProviderEntries.map(\.sequence) == [1, 2],
+              crossProviderEntries[0].source == CaptionSource.slackGeneric.rawValue,
+              crossProviderEntries[1].source == CaptionSource.zoomNative.rawValue,
+              crossProviderEntries.map(\.text) == ["Slack segment", "Zoom segment"],
+              recordingStatuses.contains(where: { $0.contains("Slack meeting ended") }),
+              recordingStatuses.contains(where: { $0.contains("Zoom meeting detected") }),
+              let finishedSession = try MeetingLibrary.loadMeeting(at: sessionStore.directory),
+              finishedSession.metadata.endedAt != nil else {
+            throw SelfTestError.failed("recording session did not preserve one transcript across provider detach/switch")
+        }
+        passed.append("cross-provider recording session")
+
         return passed
+    }
+}
+
+
+private final class SelfTestRecordingProvider: RecordingProvider, @unchecked Sendable {
+    let id: String
+    let displayName: String
+    private let source: CaptionSource
+    private let text: String
+    private let stopAfterAttachment: Bool
+    private var consumed = false
+
+    init(
+        id: String,
+        displayName: String,
+        source: CaptionSource,
+        text: String,
+        stopAfterAttachment: Bool
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.source = source
+        self.text = text
+        self.stopAfterAttachment = stopAfterAttachment
+    }
+
+    func probe() throws -> RecordingProviderProbe {
+        RecordingProviderProbe(active: !consumed, detail: consumed ? nil : "self-test")
+    }
+
+    func recordAttachment(
+        store: MeetingStore,
+        accumulator: TranscriptAccumulator,
+        control: CollectorControl,
+        options: CollectorOptions,
+        onStatus: ((String) -> Void)?
+    ) throws -> RecordingAttachmentResult {
+        _ = accumulator.ingest(
+            CaptionCandidate(
+                speaker: displayName,
+                text: text,
+                confidence: 1,
+                sourcePath: id,
+                source: source
+            )
+        )
+        guard let finalized = accumulator.flush() else {
+            throw SelfTestError.failed("fake provider failed to finalize transcript")
+        }
+        try store.appendTranscript(finalized)
+        consumed = true
+        if stopAfterAttachment {
+            control.stop()
+            return .stopped
+        }
+        return .detached
     }
 }

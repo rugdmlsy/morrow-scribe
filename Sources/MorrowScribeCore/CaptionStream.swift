@@ -1,5 +1,25 @@
 import Foundation
 
+
+public final class CaptionStreamState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var candidates: [CaptionCandidate] = []
+
+    public init() {}
+
+    public func snapshot() -> [CaptionCandidate] {
+        lock.lock()
+        defer { lock.unlock() }
+        return candidates
+    }
+
+    public func update(_ newCandidates: [CaptionCandidate]) {
+        lock.lock()
+        candidates = newCandidates
+        lock.unlock()
+    }
+}
+
 public enum CaptionStream {
     /// Return only candidates that are new or updated compared with Slack's previous
     /// rolling caption buffer.

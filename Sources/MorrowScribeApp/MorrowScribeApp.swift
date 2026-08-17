@@ -28,7 +28,7 @@ struct MorrowScribeDesktopApp: App {
 final class ScribeViewModel: ObservableObject {
     @Published var meetings: [SavedMeeting] = []
     @Published var selectedMeetingID: String?
-    @Published var meetingTitle = "Slack Huddle"
+    @Published var meetingTitle = "Meeting"
     @Published var isTranscribing = false
     @Published var isStopping = false
     @Published var isSummarizing = false
@@ -39,6 +39,7 @@ final class ScribeViewModel: ObservableObject {
     @Published var accessibilityTrusted = SlackAXSession().accessibilityTrusted
 
     private var collectorControl: CollectorControl?
+    private var recordingStatus: RecordingStatus?
     private var activeMeetingDirectory: URL?
 
     enum DetailTab: String, CaseIterable, Identifiable {
@@ -60,6 +61,9 @@ final class ScribeViewModel: ObservableObject {
 
     func refreshLibraryKeepingSelection() {
         accessibilityTrusted = SlackAXSession().accessibilityTrusted
+        if isTranscribing, !isStopping, let recordingStatus {
+            statusText = recordingStatus.current
+        }
         let selected = selectedMeetingID
         let activePath = activeMeetingDirectory?.path
         do {
@@ -88,39 +92,35 @@ final class ScribeViewModel: ObservableObject {
         errorText = nil
         accessibilityTrusted = SlackAXSession().accessibilityTrusted
         guard accessibilityTrusted else {
-            errorText = "Morrow Scribe needs macOS Accessibility access to read Slack captions. Use Request Access, then enable Morrow Scribe in System Settings → Privacy & Security → Accessibility. If Morrow Scribe is already enabled there but this message remains, remove the old Morrow Scribe entry and add ~/Applications/Morrow Scribe.app again once; builds before the signing fix used an unstable code identity."
+            errorText = "Morrow Scribe needs macOS Accessibility access to read meeting captions. Use Request Access, then enable Morrow Scribe in System Settings → Privacy & Security → Accessibility."
             return
         }
         do {
-            let huddle = try SlackHuddleController().status()
-            guard huddle.active else {
-                errorText = "Start or join a Slack Huddle first."
-                return
-            }
-
             let title = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "Slack Huddle"
+                ? "Meeting"
                 : meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let store = try MeetingStore(title: title)
             let control = CollectorControl()
+            let runtimeStatus = RecordingStatus("Listening for meetings: Slack")
             collectorControl = control
+            recordingStatus = runtimeStatus
             activeMeetingDirectory = store.directory
             isTranscribing = true
             isStopping = false
-            statusText = "Starting transcription…"
+            statusText = runtimeStatus.current
             refreshLibraryKeepingSelection()
 
             let autoSummary = autoSummarize
             Task { [weak self] in
                 let errorMessage = await Task.detached { () -> String? in
-                    let collector = SlackCaptionCollector(
-                        session: SlackAXSession(),
+                    let recording = RecordingSession(
                         store: store,
-                        options: CollectorOptions(pollInterval: 0.25, learnMode: false),
-                        control: control
+                        providers: RecordingProviderCatalog.defaultProviders(),
+                        control: control,
+                        options: CollectorOptions(pollInterval: 0.25, learnMode: false, monitorInterval: 0.75)
                     )
                     do {
-                        try collector.run()
+                        try recording.run { runtimeStatus.update($0) }
                         return nil
                     } catch {
                         return String(describing: error)
@@ -129,15 +129,16 @@ final class ScribeViewModel: ObservableObject {
 
                 guard let self else { return }
                 self.collectorControl = nil
+                self.recordingStatus = nil
                 let finishedDirectory = self.activeMeetingDirectory
                 self.activeMeetingDirectory = nil
                 self.isTranscribing = false
                 self.isStopping = false
                 if let errorMessage {
-                    self.statusText = "Transcription stopped with an error"
+                    self.statusText = "Recording stopped with an error"
                     self.errorText = errorMessage
                 } else {
-                    self.statusText = "Transcription saved"
+                    self.statusText = "Recording saved"
                 }
                 self.refreshLibraryKeepingSelection()
                 if autoSummary, self.llmConfigured, let finishedDirectory {
@@ -146,14 +147,14 @@ final class ScribeViewModel: ObservableObject {
             }
         } catch {
             errorText = String(describing: error)
-            statusText = "Could not start transcription"
+            statusText = "Could not start recording"
         }
     }
 
     func stopTranscription() {
         guard isTranscribing, !isStopping else { return }
         isStopping = true
-        statusText = "Finishing transcript…"
+        statusText = "Finishing recording…"
         collectorControl?.stop()
     }
 

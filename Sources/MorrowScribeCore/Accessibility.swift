@@ -21,6 +21,14 @@ public enum SlackAXError: Error, CustomStringConvertible {
 public final class SlackAXSession: @unchecked Sendable {
     public static let slackBundleIdentifier = "com.tinyspeck.slackmacgap"
 
+    public static func isHuddleWindowTitle(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return title.hasPrefix("抱团：")
+            || title.hasPrefix("抱团:")
+            || lower.hasPrefix("huddle:")
+            || lower.hasPrefix("huddle：")
+    }
+
     private var applicationElement: AXUIElement?
     private var retainedWindow: AXUIElement?
     private(set) public var slackPID: pid_t?
@@ -128,12 +136,12 @@ public final class SlackAXSession: @unchecked Sendable {
 
     public var isAttachedToHuddle: Bool {
         guard let retainedWindow else { return false }
-        return stringAttribute(retainedWindow, kAXTitleAttribute as CFString).hasPrefix("抱团：")
+        return Self.isHuddleWindowTitle(stringAttribute(retainedWindow, kAXTitleAttribute as CFString))
     }
 
     private static func preferredWindow(in windows: [AXUIElement]) -> AXUIElement? {
         if let huddle = windows.first(where: {
-            stringAttribute($0, kAXTitleAttribute as CFString).hasPrefix("抱团：")
+            isHuddleWindowTitle(stringAttribute($0, kAXTitleAttribute as CFString))
         }) {
             return huddle
         }

@@ -9,7 +9,12 @@ public final class MeetingStore: @unchecked Sendable {
     private let encoder: JSONEncoder
     private var metadata: MeetingMetadata
 
-    public init(title: String, baseDirectory: URL? = nil, now: Date = Date()) throws {
+    public init(
+        title: String,
+        baseDirectory: URL? = nil,
+        now: Date = Date(),
+        platform: String = "multi"
+    ) throws {
         let root = baseDirectory ?? Self.defaultRootDirectory()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -19,7 +24,7 @@ public final class MeetingStore: @unchecked Sendable {
         transcriptURL = directory.appendingPathComponent("transcript.jsonl")
         markdownURL = directory.appendingPathComponent("transcript.md")
         axEventsURL = directory.appendingPathComponent("ax-events.jsonl")
-        metadata = MeetingMetadata(title: title, startedAt: now)
+        metadata = MeetingMetadata(title: title, platform: platform, startedAt: now)
 
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

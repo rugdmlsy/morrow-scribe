@@ -79,19 +79,24 @@ struct MorrowScribeCLI {
     }
 
     static func collect(args: [String]) throws {
-        let title = option("--title", in: args) ?? "Slack Huddle"
+        let title = option("--title", in: args) ?? "Meeting"
         let duration = option("--duration", in: args).flatMap(Double.init)
         let interval = option("--poll", in: args).flatMap(Double.init) ?? 0.25
         let learn = args.contains("--learn")
         let output = option("--output", in: args).map { URL(fileURLWithPath: $0, isDirectory: true) }
         let store = try MeetingStore(title: title, baseDirectory: output)
         print("meeting_dir=\(store.directory.path)")
-        let collector = SlackCaptionCollector(
-            session: SlackAXSession(),
+        let recording = RecordingSession(
             store: store,
-            options: CollectorOptions(pollInterval: interval, learnMode: learn, duration: duration)
+            providers: RecordingProviderCatalog.defaultProviders(),
+            options: CollectorOptions(
+                pollInterval: interval,
+                learnMode: learn,
+                duration: duration,
+                monitorInterval: max(0.25, interval)
+            )
         )
-        try collector.run { print("[scribe] \($0)") }
+        try recording.run { print("[scribe] \($0)") }
     }
 
     static func huddle(args: [String]) throws {
@@ -145,7 +150,7 @@ struct MorrowScribeCLI {
 
     static func printHelp() {
         print("""
-        Morrow Scribe — Slack-native meeting transcript collector
+        Morrow Scribe — persistent meeting transcript recorder
 
         Usage:
           morrow-scribe self-test
@@ -156,8 +161,9 @@ struct MorrowScribeCLI {
           morrow-scribe export MEETING_DIR
           morrow-scribe summarize MEETING_DIR
 
-        collect briefly foregrounds Slack once to capture the AX window, restores the previous app,
-        then continues reading the retained Accessibility window while Slack stays in the background.
+        collect starts a persistent recording session immediately. It monitors Slack without requiring
+        a Huddle to already exist, attaches when one begins, returns to listening after it ends, and
+        appends later meetings to the same transcript until the recording session stops.
         """)
     }
 }

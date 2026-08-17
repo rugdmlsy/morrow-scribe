@@ -40,6 +40,12 @@ swift run morrow-scribe summarize "~/Library/Application Support/Morrow Scribe/m
 Transcript JSONL records the actual source per utterance as `slack_ax_side_by_side`, `slack_ax_overlay`, or the generic compatibility fallback.
 
 
+## Recording sessions and providers
+
+A recording is intentionally longer-lived than any individual meeting-app attachment. Pressing **Start** creates one `MeetingStore` immediately and starts a `RecordingSession`. The session repeatedly probes its configured `RecordingProvider`s, attaches to an active source, appends transcript entries, and returns to monitoring when that source disappears. Only pressing **Stop** ends the store and, when enabled, triggers the final summary.
+
+The current default provider is Slack. `SlackRecordingProvider` keeps its recent caption-buffer state across Huddle detach/re-attach, so a persistent side-by-side transcript can be aligned instead of replayed. A future `ZoomRecordingProvider` can implement the same `RecordingProvider` contract and be added to the provider list; switching Slack → Zoom would then continue writing the same `transcript.jsonl` and final summary. Each transcript row already carries a source identifier.
+
 ## macOS GUI
 
 Morrow Scribe also includes a native SwiftUI app. Build/install the local app bundle with:
@@ -51,7 +57,9 @@ open "$HOME/Applications/Morrow Scribe.app"
 
 The GUI provides:
 
-- Start / stop Slack Huddle transcription
+- Start / stop a persistent recording session; starting does not require a Slack Huddle to already exist
+- Continuously monitor Slack, attach when a Huddle begins, detach when it ends, and append later Huddles to the same transcript
+- Provider abstraction (`RecordingProvider`) keeps the session/store layer ready for future Zoom or other meeting sources
 - Side-by-side captions by default, with overlay caption fallback
 - Saved meeting browser backed by `~/Library/Application Support/Morrow Scribe/meetings/`
 - Right-click meeting menu for Rename and Delete (with deletion confirmation)

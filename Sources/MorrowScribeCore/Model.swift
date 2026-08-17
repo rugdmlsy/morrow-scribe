@@ -42,6 +42,8 @@ public enum CaptionSource: String, Codable, Hashable, Sendable {
     case slackSideBySide = "slack_ax_side_by_side"
     case slackOverlay = "slack_ax_overlay"
     case slackGeneric = "slack_ax_generic"
+    /// Reserved source identifier for a future native Zoom caption provider.
+    case zoomNative = "zoom_native_caption"
 }
 
 public struct CaptionCandidate: Codable, Hashable, Sendable {
