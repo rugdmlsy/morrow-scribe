@@ -25,6 +25,20 @@ public final class TranscriptAccumulator: @unchecked Sendable {
             if normalized.text == existing.text {
                 return nil
             }
+
+            // Native caption UIs revise punctuation and recognition hypotheses while an
+            // utterance is still in progress. Zoom in particular can evolve a stable row
+            // from `Zoom.` -> `Zoom, segment.` -> `Zoom segment alpha.`; raw string-prefix
+            // matching would incorrectly finalize every revision. A stable source path is
+            // a stronger signal that this is the same live caption row, so always replace
+            // the in-progress candidate instead of emitting an intermediate transcript row.
+            if existing.source == normalized.source,
+               !existing.sourcePath.isEmpty,
+               existing.sourcePath == normalized.sourcePath {
+                current = normalized
+                return nil
+            }
+
             if normalized.text.hasPrefix(existing.text) || existing.text.hasPrefix(normalized.text) {
                 if normalized.text.count >= existing.text.count {
                     current = normalized

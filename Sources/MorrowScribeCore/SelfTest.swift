@@ -25,6 +25,16 @@ public enum MorrowScribeSelfTest {
         guard finalized?.speaker == "Alice", finalized?.text == "hello world", accumulator.flush()?.text == "yes" else {
             throw SelfTestError.failed("accumulator speaker transition failed")
         }
+        let zoomAccumulator = TranscriptAccumulator()
+        guard zoomAccumulator.ingest(CaptionCandidate(speaker: "wu wu", text: "Zoom.", confidence: 1, sourcePath: "z.0", source: .zoomNative)) == nil,
+              zoomAccumulator.ingest(CaptionCandidate(speaker: "wu wu", text: "Zoom, segment.", confidence: 1, sourcePath: "z.0", source: .zoomNative)) == nil,
+              zoomAccumulator.ingest(CaptionCandidate(speaker: "wu wu", text: "Zoom segment alpha.", confidence: 1, sourcePath: "z.0", source: .zoomNative)) == nil else {
+            throw SelfTestError.failed("accumulator emitted a Zoom hypothesis revision")
+        }
+        let zoomFinalized = zoomAccumulator.ingest(CaptionCandidate(speaker: "wu wu", text: "Second utterance.", confidence: 1, sourcePath: "z.1", source: .zoomNative))
+        guard zoomFinalized?.text == "Zoom segment alpha.", zoomAccumulator.flush()?.text == "Second utterance." else {
+            throw SelfTestError.failed("accumulator failed to finalize a stable Zoom caption row")
+        }
         passed.append("transcript accumulator")
 
         let overlayNodes = [
@@ -68,9 +78,11 @@ public enum MorrowScribeSelfTest {
             AXSnapshotNode(path: "z.1.0.0", depth: 3, role: "AXGroup", title: "", value: "", description: "", identifier: "", parentPath: "z.1.0"),
             AXSnapshotNode(path: "z.1.0.0.0", depth: 4, role: "AXStaticText", title: "", value: "wu wu", description: "", identifier: "", parentPath: "z.1.0.0"),
             AXSnapshotNode(path: "z.1.0.0.1", depth: 4, role: "AXStaticText", title: "", value: "Hello hello. okay?", description: "", identifier: "", parentPath: "z.1.0.0"),
+            AXSnapshotNode(path: "z.1.0.0.2", depth: 4, role: "AXStaticText", title: "", value: "Hello hello. okay?", description: "", identifier: "", parentPath: "z.1.0.0"),
         ]
         let zoomCandidates = ZoomCaptionHeuristics.extractCandidates(from: zoomCaptionNodes)
         guard ZoomAXSession.isMeetingWindowTitle("Zoom会议"),
+              ZoomAXSession.isMeetingWindowTitle("wu wu的Zoom会议"),
               ZoomAXSession.isMeetingWindowTitle("Zoom Meeting"),
               ZoomCaptionHeuristics.hasCaptionSurface(in: zoomCaptionNodes),
               zoomCandidates.count == 1,
@@ -78,6 +90,24 @@ public enum MorrowScribeSelfTest {
               zoomCandidates[0].text == "Hello hello. okay?",
               zoomCandidates[0].source == .zoomNative else {
             throw SelfTestError.failed("Zoom native caption Accessibility parser failed")
+        }
+        let zoomBaseline = CaptionCandidate(
+            speaker: "wu wu",
+            text: "Old Zoom text.",
+            confidence: 1,
+            sourcePath: "z.1.0.0",
+            source: .zoomNative
+        )
+        let zoomExtended = CaptionCandidate(
+            speaker: "wu wu",
+            text: "Old Zoom text. New text after attach.",
+            confidence: 1,
+            sourcePath: "z.1.0.0",
+            source: .zoomNative
+        )
+        guard ZoomCaptionHeuristics.removingAttachmentBaseline(from: zoomBaseline, baseline: zoomBaseline) == nil,
+              ZoomCaptionHeuristics.removingAttachmentBaseline(from: zoomExtended, baseline: zoomBaseline)?.text == "New text after attach." else {
+            throw SelfTestError.failed("Zoom attachment baseline replay suppression failed")
         }
         passed.append("Zoom native caption parser")
 

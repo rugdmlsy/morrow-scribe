@@ -29,8 +29,16 @@ public final class ZoomCaptionCollector: @unchecked Sendable {
         guard session.isAttachedToMeeting else { return .detached }
         onStatus?("attached to Zoom pid=\(session.zoomPID ?? 0), window=\(try session.windowTitle())")
 
-        var previousCandidates = streamState.snapshot()
-        var lastCaptionAvailability: Bool?
+        let initial = try session.snapshot()
+        var previousCandidates = ZoomCaptionHeuristics.extractCandidates(from: initial)
+        let attachmentBaseline = Dictionary(
+            uniqueKeysWithValues: previousCandidates.map { ($0.sourcePath, $0) }
+        )
+        streamState.update(previousCandidates)
+        var lastCaptionAvailability: Bool? = ZoomCaptionHeuristics.hasCaptionSurface(in: initial)
+        if let lastCaptionAvailability {
+            onStatus?(lastCaptionAvailability ? "Zoom native captions available" : "Zoom meeting detected; waiting for captions to be shown")
+        }
 
         while true {
             if control.isStopRequested { break }
@@ -55,7 +63,11 @@ public final class ZoomCaptionCollector: @unchecked Sendable {
                 let delta = CaptionStream.delta(previous: previousCandidates, current: candidates)
                 let now = Date()
                 for candidate in delta {
-                    if let finalized = accumulator.ingest(candidate, at: now) {
+                    guard let postAttach = ZoomCaptionHeuristics.removingAttachmentBaseline(
+                        from: candidate,
+                        baseline: attachmentBaseline[candidate.sourcePath]
+                    ) else { continue }
+                    if let finalized = accumulator.ingest(postAttach, at: now) {
                         try store.appendTranscript(finalized)
                         onStatus?("\(finalized.speaker ?? "Unknown"): \(finalized.text)")
                     }

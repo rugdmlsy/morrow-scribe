@@ -33,11 +33,10 @@ public final class ZoomAXSession: @unchecked Sendable {
 
     public static func isMeetingWindowTitle(_ title: String) -> Bool {
         let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "zoom meeting"
-            || normalized == "zoom会议"
-            || normalized.hasPrefix("zoom meeting ")
-            || normalized.hasPrefix("zoom webinar")
-            || normalized.hasPrefix("zoom网络研讨会")
+        return normalized.contains("zoom meeting")
+            || normalized.contains("zoom会议")
+            || normalized.contains("zoom webinar")
+            || normalized.contains("zoom网络研讨会")
     }
 
     public static func passiveStatus() throws -> RecordingProviderProbe {
@@ -57,6 +56,9 @@ public final class ZoomAXSession: @unchecked Sendable {
                     detail: stringAttribute(meeting, kAXTitleAttribute as CFString)
                 )
             }
+            if let title = backgroundMeetingTitle(in: app) {
+                return RecordingProviderProbe(active: true, detail: title)
+            }
             if attempt < 2 { Thread.sleep(forTimeInterval: 0.08) }
         }
         return .inactive
@@ -71,12 +73,22 @@ public final class ZoomAXSession: @unchecked Sendable {
         }
 
         let app = AXUIElementCreateApplication(zoom.processIdentifier)
-        var meeting: AXUIElement?
-        for attempt in 0..<4 {
-            let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute as CFString) ?? []
-            meeting = Self.preferredMeetingWindow(in: windows)
-            if meeting != nil { break }
-            if attempt < 3 { Thread.sleep(forTimeInterval: 0.10) }
+        var meeting = Self.findMeetingWindow(in: app, attempts: 3)
+
+        // Zoom 7.1 stops returning its meeting from AXWindows while it is in the
+        // background, even though the meeting remains listed in the app menu bar.
+        // Surface Zoom only long enough to obtain a stable AXUIElement reference,
+        // then immediately restore whichever application the user was using.
+        if meeting == nil, Self.backgroundMeetingTitle(in: app) != nil {
+            let previous = NSWorkspace.shared.frontmostApplication
+            if previous?.processIdentifier != zoom.processIdentifier {
+                _ = zoom.activate(options: [.activateAllWindows])
+                Thread.sleep(forTimeInterval: 0.35)
+            }
+            meeting = Self.findMeetingWindow(in: app, attempts: 6)
+            if let previous, previous.processIdentifier != zoom.processIdentifier {
+                _ = previous.activate(options: [])
+            }
         }
         guard let meeting else { throw ZoomAXError.noMeetingWindow }
 
@@ -142,6 +154,36 @@ public final class ZoomAXSession: @unchecked Sendable {
             isMeetingWindowTitle(stringAttribute($0, kAXTitleAttribute as CFString))
         }
     }
+
+    private static func findMeetingWindow(in app: AXUIElement, attempts: Int) -> AXUIElement? {
+        for attempt in 0..<attempts {
+            let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute as CFString) ?? []
+            if let meeting = preferredMeetingWindow(in: windows) { return meeting }
+            if attempt + 1 < attempts { Thread.sleep(forTimeInterval: 0.10) }
+        }
+        return nil
+    }
+
+    private static func backgroundMeetingTitle(in app: AXUIElement) -> String? {
+        guard let menuBar: AXUIElement = attribute(app, kAXMenuBarAttribute as CFString) else {
+            return nil
+        }
+        var match: String?
+        func walk(_ element: AXUIElement, depth: Int) {
+            guard match == nil, depth <= 12 else { return }
+            if stringAttribute(element, kAXRoleAttribute as CFString) == "AXMenuItem" {
+                let title = stringAttribute(element, kAXTitleAttribute as CFString)
+                if isMeetingWindowTitle(title) {
+                    match = title
+                    return
+                }
+            }
+            let children: [AXUIElement] = attribute(element, kAXChildrenAttribute as CFString) ?? []
+            for child in children { walk(child, depth: depth + 1) }
+        }
+        walk(menuBar, depth: 0)
+        return match
+    }
 }
 
 public enum ZoomCaptionHeuristics {
@@ -164,7 +206,14 @@ public enum ZoomCaptionHeuristics {
             let grouped = Dictionary(grouping: textNodes) { $0.parentPath ?? "" }
             for parentPath in grouped.keys.sorted() {
                 guard let group = grouped[parentPath] else { continue }
-                let values = group.sorted { $0.path < $1.path }.map(cleanText).filter { !$0.isEmpty }
+                let rawValues = group.sorted { $0.path < $1.path }.map(cleanText).filter { !$0.isEmpty }
+                // Zoom 7.1 may expose the same rendered caption through two adjacent
+                // AXStaticText nodes (for example, the subtitle view plus its accessibility
+                // mirror). Collapse only adjacent exact duplicates so a distinct translated
+                // subtitle remains available rather than duplicating the whole utterance.
+                let values = rawValues.reduce(into: [String]()) { result, value in
+                    if result.last != value { result.append(value) }
+                }
                 guard values.count >= 2 else { continue }
                 let speaker = values[0]
                 let text = values.dropFirst().joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -179,6 +228,40 @@ public enum ZoomCaptionHeuristics {
             }
         }
         return deduplicate(output)
+    }
+
+    public static func removingAttachmentBaseline(
+        from candidate: CaptionCandidate,
+        baseline: CaptionCandidate?
+    ) -> CaptionCandidate? {
+        guard let baseline,
+              baseline.sourcePath == candidate.sourcePath,
+              baseline.speaker == candidate.speaker else {
+            return candidate
+        }
+
+        let oldText = baseline.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newText = candidate.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newText.isEmpty else { return nil }
+        guard !oldText.isEmpty else { return candidate }
+        if newText == oldText { return nil }
+
+        guard newText.hasPrefix(oldText) else {
+            // Zoom may recycle a caption row for a genuinely new utterance. If the new
+            // text is not an extension of the attachment-time value, treat it as new.
+            return candidate
+        }
+
+        let suffix = String(newText.dropFirst(oldText.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suffix.isEmpty else { return nil }
+        return CaptionCandidate(
+            speaker: candidate.speaker,
+            text: suffix,
+            confidence: candidate.confidence,
+            sourcePath: candidate.sourcePath,
+            source: candidate.source
+        )
     }
 
     private static func captionRoots(in nodes: [AXSnapshotNode]) -> [AXSnapshotNode] {

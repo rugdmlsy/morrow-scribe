@@ -81,16 +81,41 @@ public final class SlackHuddleController: @unchecked Sendable {
 
         let app = AXUIElementCreateApplication(slack.processIdentifier)
         _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute as CFString) ?? []
-        guard let huddle = preferredHuddleWindow(in: windows) else {
-            return HuddleStatus(active: false, windowTitle: nil, captionsEnabled: nil)
+
+        // Electron can expose an empty AX window list while Slack is fully in the background,
+        // but the native macOS Window menu remains accessible and contains an item whose title
+        // is the live Huddle window title (for example `抱团：#社交 - Test - Slack`). Use that
+        // semantic signal first so monitoring never has to foreground Slack just to discover it.
+        if let menuBar: AXUIElement = attribute(app, kAXMenuBarAttribute as CFString),
+           let huddleItem = find(menuBar, where: { element in
+               guard stringAttribute(element, kAXRoleAttribute as CFString) == "AXMenuItem" else { return false }
+               return SlackAXSession.isHuddleWindowTitle(
+                   stringAttribute(element, kAXTitleAttribute as CFString)
+               )
+           }) {
+            return HuddleStatus(
+                active: true,
+                windowTitle: stringAttribute(huddleItem, kAXTitleAttribute as CFString),
+                captionsEnabled: nil,
+                captionMode: nil
+            )
         }
-        return HuddleStatus(
-            active: true,
-            windowTitle: stringAttribute(huddle, kAXTitleAttribute as CFString),
-            captionsEnabled: nil,
-            captionMode: nil
-        )
+
+        // Keep direct AX window discovery as a compatibility fallback for Slack builds whose
+        // native Window menu structure changes.
+        for attempt in 0..<3 {
+            let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute as CFString) ?? []
+            if let huddle = preferredHuddleWindow(in: windows) {
+                return HuddleStatus(
+                    active: true,
+                    windowTitle: stringAttribute(huddle, kAXTitleAttribute as CFString),
+                    captionsEnabled: nil,
+                    captionMode: nil
+                )
+            }
+            if attempt < 2 { Thread.sleep(forTimeInterval: 0.06) }
+        }
+        return HuddleStatus(active: false, windowTitle: nil, captionsEnabled: nil)
     }
 
     /// Select Slack's persistent side-by-side transcript as the preferred Huddle view.

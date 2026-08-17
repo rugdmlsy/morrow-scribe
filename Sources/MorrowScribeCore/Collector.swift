@@ -72,6 +72,15 @@ public final class SlackCaptionCollector: @unchecked Sendable {
 
         var previous = try session.snapshot()
         var previousCandidates = streamState.snapshot()
+        if previousCandidates.isEmpty {
+            // A persistent side-by-side transcript can already contain older utterances when
+            // Scribe attaches to a Huddle that was open before recording started. Treat that
+            // existing history as the baseline; only caption changes observed after attach
+            // belong to this recording session. On later detach/re-attach, streamState is kept
+            // so the normal overlap logic still preserves continuity without replaying history.
+            previousCandidates = CaptionHeuristics.extractCandidates(from: previous)
+            streamState.update(previousCandidates)
+        }
         var lastSource = CaptionHeuristics.preferredSource(from: previous)
         if let lastSource { onStatus?("caption source: \(lastSource.rawValue)") }
 
