@@ -88,7 +88,7 @@ final class ScribeViewModel: ObservableObject {
         errorText = nil
         accessibilityTrusted = SlackAXSession().accessibilityTrusted
         guard accessibilityTrusted else {
-            errorText = "Morrow Scribe needs macOS Accessibility access to read Slack captions. Use Request Access, then enable Morrow Scribe in System Settings → Privacy & Security → Accessibility."
+            errorText = "Morrow Scribe needs macOS Accessibility access to read Slack captions. Use Request Access, then enable Morrow Scribe in System Settings → Privacy & Security → Accessibility. If Morrow Scribe is already enabled there but this message remains, remove the old Morrow Scribe entry and add ~/Applications/Morrow Scribe.app again once; builds before the signing fix used an unstable code identity."
             return
         }
         do {

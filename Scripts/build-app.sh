@@ -23,5 +23,12 @@ cat > "$DEST/Contents/Info.plist" <<'PLIST'
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-codesign --force --deep --sign - "$DEST"
+# Accessibility/TCC grants are matched against the app's designated code requirement.
+# Plain ad-hoc signing defaults that requirement to the current binary CDHash, so every
+# rebuild invalidates an existing Accessibility grant. Keep a stable explicit requirement
+# based on the bundle identifier instead.
+codesign --force --deep --sign - \
+  --identifier com.morrow.scribe \
+  --requirements '=designated => identifier "com.morrow.scribe"' \
+  "$DEST"
 echo "$DEST"

@@ -59,7 +59,7 @@ The GUI provides:
 - Reveal a meeting directory in Finder
 - Manual `Generate Summary` and `Auto summary` controls when an OpenAI-compatible LLM is configured
 
-Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**.
+Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**. The app bundle is signed with a stable designated requirement (`identifier "com.morrow.scribe"`) so rebuilding/updating the local app no longer invalidates the Accessibility grant. If upgrading from a build created before this fix, remove the old Accessibility entry and add `~/Applications/Morrow Scribe.app` once to replace the stale CDHash-based grant.
 
 ## Summary provider
 
