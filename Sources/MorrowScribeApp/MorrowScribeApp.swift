@@ -427,7 +427,8 @@ struct ContentView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
-                            .frame(width: 170)
+                            .labelsHidden()
+                            .frame(width: 184)
                             .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                         }
                         Toggle(isOn: $markdownPreviewEnabled) {
@@ -786,10 +787,6 @@ private struct SummaryDetailView: View, Equatable {
     let legacySummary: String?
     let presentationMode: SummaryPresentationMode
 
-    private let gridColumns = [
-        GridItem(.adaptive(minimum: 300, maximum: 520), spacing: 14, alignment: .top)
-    ]
-
     nonisolated static func == (lhs: SummaryDetailView, rhs: SummaryDetailView) -> Bool {
         lhs.structuredSummary == rhs.structuredSummary &&
             lhs.legacySummary == rhs.legacySummary &&
@@ -810,7 +807,7 @@ private struct SummaryDetailView: View, Equatable {
                         }
                     }
 
-                    LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 14) {
                         if !summary.decisions.isEmpty {
                             pointCard(title: "Decisions", systemImage: "checkmark.seal", points: summary.decisions)
                         }
@@ -858,6 +855,7 @@ private struct SummaryDetailView: View, Equatable {
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .top)
             }
+            .id(presentationMode)
         } else if let legacySummary, !legacySummary.isEmpty {
             MarkdownDocumentView(markdown: legacySummary, preview: false)
         } else {
