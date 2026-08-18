@@ -149,18 +149,62 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("collector control")
 
-        let entries = [TranscriptEntry(sequence: 1, speaker: "Alice", text: "We will ship Friday.", confidence: 1)]
+        let summaryStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let entries = [
+            TranscriptEntry(
+                sequence: 1,
+                observedAt: summaryStart,
+                speaker: "Alice",
+                text: "We will ship Friday.",
+                source: CaptionSource.slackSideBySide.rawValue,
+                confidence: 1
+            ),
+            TranscriptEntry(
+                sequence: 2,
+                observedAt: summaryStart.addingTimeInterval(65),
+                speaker: "Bob",
+                text: "I'll update the prototype tomorrow.",
+                source: CaptionSource.zoomNative.rawValue,
+                confidence: 1
+            ),
+        ]
         let prompt = MeetingExport.summaryPrompt(entries: entries)
-        guard prompt.contains("## Decisions"), prompt.contains("## Action Items"), prompt.contains("[Alice] We will ship Friday.") else {
+        guard prompt.contains("Empty is better than guessed"),
+              prompt.contains("A decision is something actually agreed/decided"),
+              prompt.contains("[00:00] [Alice] [slack_ax_side_by_side] We will ship Friday."),
+              prompt.contains("[01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
             throw SelfTestError.failed("summary prompt contract failed")
         }
-        passed.append("summary prompt")
+        let structuredSummary = try MeetingSummary.decodeModelOutput(
+            """
+            ```json
+            {
+              "schemaVersion": 1,
+              "tldr": [{"text":"Ship Friday","evidence":{"speaker":"Alice","timestamp":"00:00","quote":"We will ship Friday."},"confidence":"high"}],
+              "decisions": [{"text":"Friday is the ship target","evidence":{"speaker":"Alice","timestamp":"00:00","quote":"We will ship Friday."},"confidence":"high"}],
+              "actionItems": [{"text":"Update the prototype","owner":"Bob","deadline":"tomorrow","explicitness":"explicit","evidence":{"speaker":"Bob","timestamp":"01:05","quote":"I'll update the prototype tomorrow."},"confidence":"high"}],
+              "nextSteps": [],
+              "openQuestions": [],
+              "risks": [],
+              "sections": [],
+              "sourceWarnings": []
+            }
+            ```
+            """
+        )
+        guard structuredSummary.actionItems.first?.owner == "Bob",
+              structuredSummary.markdown.contains("## Decisions"),
+              structuredSummary.markdown.contains("- [ ] Update the prototype — Owner: Bob; Deadline: tomorrow") else {
+            throw SelfTestError.failed("structured summary parsing/export failed")
+        }
+        passed.append("structured summary")
 
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-scribe-self-test-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let store = try MeetingStore(title: "Self Test", baseDirectory: tmp)
         try store.appendTranscript(TranscriptEntry(sequence: 1, speaker: "Alice", text: "hello", confidence: 1))
         try store.finish()
+        try MeetingExport.writeSummary(structuredSummary, to: store.directory)
         let roundTrip = try MeetingExport.transcriptEntries(in: store.directory)
         guard roundTrip.count == 1, roundTrip[0].speaker == "Alice", roundTrip[0].text == "hello" else {
             throw SelfTestError.failed("meeting store round-trip failed")
@@ -170,7 +214,9 @@ public enum MorrowScribeSelfTest {
         let library = try MeetingLibrary.loadAll(root: tmp)
         guard library.count == 1,
               library[0].metadata.title == "Self Test",
-              library[0].transcript.contains("Alice") else {
+              library[0].transcript.contains("Alice"),
+              library[0].structuredSummary?.decisions.count == 1,
+              library[0].summary?.contains("## Action Items") == true else {
             throw SelfTestError.failed("meeting library failed to load saved meeting")
         }
         passed.append("meeting library")

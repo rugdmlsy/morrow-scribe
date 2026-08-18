@@ -136,11 +136,10 @@ struct MorrowScribeCLI {
         let directory = URL(fileURLWithPath: path, isDirectory: true)
         let entries = try MeetingExport.transcriptEntries(in: directory)
         guard !entries.isEmpty else { throw CLIError(description: "meeting has no finalized transcript entries") }
-        let prompt = MeetingExport.summaryPrompt(entries: entries)
-        let summary = try await SummaryClient.summarize(prompt: prompt)
-        let out = directory.appendingPathComponent("summary.md")
-        try summary.write(to: out, atomically: true, encoding: .utf8)
-        print(out.path)
+        let configuration = SummaryConfigurationStore.environmentConfiguration()
+        let summary = try await SummaryClient.summarize(entries: entries, configuration: configuration)
+        try MeetingExport.writeSummary(summary, to: directory)
+        print(directory.appendingPathComponent("summary.md").path)
     }
 
     static func option(_ name: String, in args: [String]) -> String? {

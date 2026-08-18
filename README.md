@@ -68,10 +68,16 @@ The GUI provides:
 - Transcript and summary content views
 - Reveal a meeting directory in Finder
 - Manual `Generate Summary` and `Auto summary` controls when an OpenAI-compatible LLM is configured
+- In-app LLM settings for endpoint/model; API keys are stored in macOS Keychain
+- Structured summary preview with decisions, action items, next steps, open questions, risks, topic notes, evidence, and confidence
 
 Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**. The app bundle is signed with a stable designated requirement (`identifier "com.morrow.scribe"`) so rebuilding/updating the local app no longer invalidates the Accessibility grant. If upgrading from a build created before this fix, remove the old Accessibility entry and add `~/Applications/Morrow Scribe.app` once to replace the stale CDHash-based grant.
 
 ## Summary provider
+
+The macOS app can configure the summary provider directly from **Summary Settings**. Enter any OpenAI-compatible base URL and model; API keys are stored in macOS Keychain rather than plaintext preferences.
+
+The CLI keeps the environment-variable path:
 
 Set:
 
@@ -82,7 +88,9 @@ export MORROW_SCRIBE_LLM_MODEL=<model>
 export MORROW_SCRIBE_LLM_API_KEY=<secret>
 ```
 
-The generated summary uses: TL;DR, Decisions, Action Items, Research Questions, and Open Questions.
+The summarizer first requests grounded structured JSON and persists both `summary.json` and a portable `summary.md`. The prompt explicitly distinguishes decisions from discussion, requires owners/deadlines to be transcript-supported, prefers empty fields over guesses, and can attach speaker/timestamp/quote evidence plus confidence to important items.
+
+The native preview hides empty sections and surfaces the useful parts first: At a Glance, Decisions, Action Items, Next Steps, Open Questions, Risks / Blockers, plus optional topic-specific notes such as Research Questions or Technical Notes.
 
 ## Current scope
 

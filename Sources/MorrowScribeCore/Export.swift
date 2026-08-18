@@ -22,19 +22,15 @@ public enum MeetingExport {
     }
 
     public static func summaryPrompt(entries: [TranscriptEntry]) -> String {
-        let transcript = entries.map { "[\($0.speaker ?? "Unknown")] \($0.text)" }.joined(separator: "\n")
-        return """
-        You are a meeting scribe. Produce a concise structured summary in Markdown with exactly these sections:
-        ## TL;DR
-        ## Decisions
-        ## Action Items
-        ## Research Questions
-        ## Open Questions
+        MeetingSummaryPrompt.build(entries: entries)
+    }
 
-        Preserve speaker attribution when it matters. Do not invent decisions, owners, or deadlines. If an item is uncertain, mark it as uncertain.
-
-        Transcript:
-        \(transcript)
-        """
+    public static func writeSummary(_ summary: MeetingSummary, to directory: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let jsonURL = directory.appendingPathComponent("summary.json")
+        let markdownURL = directory.appendingPathComponent("summary.md")
+        try encoder.encode(summary).write(to: jsonURL, options: .atomic)
+        try summary.markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
     }
 }

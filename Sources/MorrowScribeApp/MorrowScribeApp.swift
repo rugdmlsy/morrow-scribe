@@ -37,6 +37,7 @@ final class ScribeViewModel: ObservableObject {
     @Published var errorText: String?
     @Published var detailTab: DetailTab = .transcript
     @Published var accessibilityTrusted = SlackAXSession().accessibilityTrusted
+    @Published var llmConfiguration = SummaryConfigurationStore.load()
 
     private var collectorControl: CollectorControl?
     private var recordingStatus: RecordingStatus?
@@ -57,7 +58,7 @@ final class ScribeViewModel: ObservableObject {
         return meetings.first { $0.id == selectedMeetingID }
     }
 
-    var llmConfigured: Bool { SummaryClient.isConfigured }
+    var llmConfigured: Bool { llmConfiguration.isConfigured }
 
     func refreshLibraryKeepingSelection() {
         accessibilityTrusted = SlackAXSession().accessibilityTrusted
@@ -206,6 +207,18 @@ final class ScribeViewModel: ObservableObject {
         Task { await summarize(directory: directory) }
     }
 
+    func saveLLMConfiguration(_ configuration: SummaryConfiguration) -> Bool {
+        do {
+            try SummaryConfigurationStore.save(configuration)
+            llmConfiguration = SummaryConfigurationStore.load()
+            statusText = llmConfigured ? "LLM settings saved" : "LLM configuration cleared"
+            return true
+        } catch {
+            errorText = "Could not save LLM settings: \(error)"
+            return false
+        }
+    }
+
     private func summarize(directory: URL) async {
         guard !isSummarizing else { return }
         isSummarizing = true
@@ -219,12 +232,8 @@ final class ScribeViewModel: ObservableObject {
                 statusText = "No transcript to summarize"
                 return
             }
-            let summary = try await SummaryClient.summarize(prompt: MeetingExport.summaryPrompt(entries: entries))
-            try summary.write(
-                to: directory.appendingPathComponent("summary.md"),
-                atomically: true,
-                encoding: .utf8
-            )
+            let summary = try await SummaryClient.summarize(entries: entries, configuration: llmConfiguration)
+            try MeetingExport.writeSummary(summary, to: directory)
             statusText = "Summary saved"
             refreshLibraryKeepingSelection()
             selectedMeetingID = directory.path
@@ -243,6 +252,7 @@ struct ContentView: View {
     @State private var deleteMeetingID: String?
     @State private var showRenameSheet = false
     @State private var showDeleteConfirmation = false
+    @State private var showLLMSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -262,6 +272,17 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showRenameSheet) {
             renameSheet
+        }
+        .sheet(isPresented: $showLLMSettings) {
+            LLMSettingsView(
+                initialConfiguration: model.llmConfiguration,
+                onSave: { configuration in
+                    if model.saveLLMConfiguration(configuration) {
+                        showLLMSettings = false
+                    }
+                },
+                onCancel: { showLLMSettings = false }
+            )
         }
         .confirmationDialog(
             "Delete this meeting?",
@@ -359,12 +380,17 @@ struct ContentView: View {
                 .padding(12)
 
                 Divider()
-                ScrollView {
-                    Text(detailText(for: meeting))
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(20)
+                switch model.detailTab {
+                case .transcript:
+                    ScrollView {
+                        Text(meeting.transcript.isEmpty ? "No transcript content yet." : meeting.transcript)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(20)
+                    }
+                case .summary:
+                    SummaryDetailView(meeting: meeting)
                 }
             }
         } else {
@@ -439,11 +465,19 @@ struct ContentView: View {
                 }
                 .disabled(model.isSummarizing || meeting.transcript.isEmpty)
             } else {
-                Label("LLM not configured", systemImage: "sparkles")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help("Set MORROW_SCRIBE_LLM_BASE_URL and MORROW_SCRIBE_LLM_MODEL to enable summaries.")
+                Button {
+                    showLLMSettings = true
+                } label: {
+                    Label("Set Up LLM", systemImage: "sparkles")
+                }
+                .help("Configure an OpenAI-compatible endpoint and model.")
             }
+            Button {
+                showLLMSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .help("Summary settings")
             Button {
                 model.revealSelectedMeeting()
             } label: {
@@ -451,15 +485,6 @@ struct ContentView: View {
             }
         }
         .padding(16)
-    }
-
-    private func detailText(for meeting: SavedMeeting) -> String {
-        switch model.detailTab {
-        case .transcript:
-            return meeting.transcript.isEmpty ? "No transcript content yet." : meeting.transcript
-        case .summary:
-            return meeting.summary ?? "No summary yet. Configure an LLM provider and generate one when ready."
-        }
     }
 
     @ToolbarContentBuilder
@@ -498,12 +523,281 @@ struct ContentView: View {
                 .disabled(!model.llmConfigured || model.isTranscribing)
                 .help(model.llmConfigured
                       ? "Generate summary.md automatically after transcription stops."
-                      : "Configure the LLM environment variables to enable automatic summaries.")
+                      : "Configure an LLM endpoint and model to enable automatic summaries.")
 
             Text(model.statusText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 180, alignment: .trailing)
+        }
+    }
+}
+
+private struct LLMSettingsView: View {
+    @State private var baseURL: String
+    @State private var model: String
+    @State private var apiKey: String
+
+    let onSave: (SummaryConfiguration) -> Void
+    let onCancel: () -> Void
+
+    init(
+        initialConfiguration: SummaryConfiguration,
+        onSave: @escaping (SummaryConfiguration) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _baseURL = State(initialValue: initialConfiguration.baseURL)
+        _model = State(initialValue: initialConfiguration.model)
+        _apiKey = State(initialValue: initialConfiguration.apiKey)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    private var configuration: SummaryConfiguration {
+        SummaryConfiguration(baseURL: baseURL, model: model, apiKey: apiKey)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("LLM Summary")
+                    .font(.title2.weight(.semibold))
+                Text("Use any OpenAI-compatible chat-completions endpoint. The API key is stored in macOS Keychain.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Form {
+                TextField("Base URL", text: $baseURL, prompt: Text("https://…/v1"))
+                    .textContentType(.URL)
+                TextField("Model", text: $model, prompt: Text("model name"))
+                SecureField("API Key", text: $apiKey, prompt: Text("optional for local endpoints"))
+            }
+            .formStyle(.grouped)
+
+            HStack(spacing: 8) {
+                Button("Use Ollama") {
+                    baseURL = "http://127.0.0.1:11434/v1"
+                }
+                .buttonStyle(.bordered)
+
+                Text("Only the endpoint is filled; choose the local model you installed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    onSave(configuration)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!configuration.isConfigured)
+            }
+        }
+        .padding(24)
+        .frame(width: 540)
+    }
+}
+
+private struct SummaryDetailView: View {
+    let meeting: SavedMeeting
+
+    private let gridColumns = [
+        GridItem(.adaptive(minimum: 300, maximum: 520), spacing: 14, alignment: .top)
+    ]
+
+    var body: some View {
+        if let summary = meeting.structuredSummary {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !summary.tldr.isEmpty {
+                        summaryCard(title: "At a Glance", systemImage: "sparkles") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(summary.tldr) { point in
+                                    SummaryPointView(point: point, prominent: true)
+                                }
+                            }
+                        }
+                    }
+
+                    LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 14) {
+                        if !summary.decisions.isEmpty {
+                            pointCard(title: "Decisions", systemImage: "checkmark.seal", points: summary.decisions)
+                        }
+                        if !summary.actionItems.isEmpty {
+                            summaryCard(title: "Action Items", systemImage: "checklist") {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(summary.actionItems) { item in
+                                        SummaryActionItemView(item: item)
+                                    }
+                                }
+                            }
+                        }
+                        if !summary.nextSteps.isEmpty {
+                            pointCard(title: "Next Steps", systemImage: "arrow.right.circle", points: summary.nextSteps)
+                        }
+                        if !summary.openQuestions.isEmpty {
+                            pointCard(title: "Open Questions", systemImage: "questionmark.circle", points: summary.openQuestions)
+                        }
+                        if !summary.risks.isEmpty {
+                            pointCard(title: "Risks / Blockers", systemImage: "exclamationmark.triangle", points: summary.risks)
+                        }
+                    }
+
+                    ForEach(summary.sections) { section in
+                        pointCard(title: section.title, systemImage: "text.alignleft", points: section.bullets)
+                    }
+
+                    if !summary.sourceWarnings.isEmpty {
+                        summaryCard(title: "Source Quality", systemImage: "waveform.badge.exclamationmark") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(summary.sourceWarnings, id: \.self) { warning in
+                                    Label(warning, systemImage: "info.circle")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: 920, alignment: .topLeading)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        } else if let legacySummary = meeting.summary, !legacySummary.isEmpty {
+            ScrollView {
+                Text(legacySummary)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(20)
+            }
+        } else {
+            ContentUnavailableView(
+                "No summary yet",
+                systemImage: "sparkles",
+                description: Text("Configure an LLM and generate a grounded summary from this transcript.")
+            )
+        }
+    }
+
+    private func pointCard(title: String, systemImage: String, points: [SummaryPoint]) -> some View {
+        summaryCard(title: title, systemImage: systemImage) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(points) { point in
+                    SummaryPointView(point: point)
+                }
+            }
+        }
+    }
+
+    private func summaryCard<Content: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(.separator.opacity(0.35), lineWidth: 0.5)
+        }
+    }
+}
+
+private struct SummaryPointView: View {
+    let point: SummaryPoint
+    var prominent = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: prominent ? "diamond.fill" : "circle.fill")
+                    .font(.system(size: prominent ? 7 : 5))
+                    .foregroundStyle(.secondary)
+                Text(point.text)
+                    .font(prominent ? .body.weight(.medium) : .body)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            SummaryEvidenceView(evidence: point.evidence, confidence: point.confidence)
+                .padding(.leading, 15)
+        }
+    }
+}
+
+private struct SummaryActionItemView: View {
+    let item: SummaryActionItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "circle")
+                    .foregroundStyle(.secondary)
+                Text(item.text)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if item.owner != nil || item.deadline != nil || item.explicitness == .inferred {
+                HStack(spacing: 10) {
+                    if let owner = item.owner {
+                        Label(owner, systemImage: "person")
+                    }
+                    if let deadline = item.deadline {
+                        Label(deadline, systemImage: "calendar")
+                    }
+                    if item.explicitness == .inferred {
+                        Label("Inferred", systemImage: "wand.and.stars")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 28)
+            }
+            SummaryEvidenceView(evidence: item.evidence, confidence: item.confidence)
+                .padding(.leading, 28)
+        }
+    }
+}
+
+private struct SummaryEvidenceView: View {
+    let evidence: SummaryEvidence?
+    let confidence: SummaryConfidence
+
+    private var metadata: String {
+        var parts: [String] = []
+        if let timestamp = evidence?.timestamp { parts.append(timestamp) }
+        if let speaker = evidence?.speaker { parts.append(speaker) }
+        if confidence != .high { parts.append("\(confidence.rawValue.capitalized) confidence") }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        if evidence?.quote != nil || !metadata.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                if !metadata.isEmpty {
+                    Text(metadata)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                if let quote = evidence?.quote {
+                    Text("“\(quote)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
         }
     }
 }

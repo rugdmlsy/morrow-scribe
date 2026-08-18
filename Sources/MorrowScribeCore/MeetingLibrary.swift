@@ -19,13 +19,21 @@ public struct SavedMeeting: Identifiable, Hashable, Sendable {
     public let metadata: MeetingMetadata
     public let transcript: String
     public let summary: String?
+    public let structuredSummary: MeetingSummary?
 
-    public init(directory: URL, metadata: MeetingMetadata, transcript: String, summary: String?) {
+    public init(
+        directory: URL,
+        metadata: MeetingMetadata,
+        transcript: String,
+        summary: String?,
+        structuredSummary: MeetingSummary? = nil
+    ) {
         self.id = directory.path
         self.directory = directory
         self.metadata = metadata
         self.transcript = transcript
         self.summary = summary
+        self.structuredSummary = structuredSummary
     }
 }
 
@@ -140,10 +148,23 @@ public enum MeetingLibrary {
         let metadata = try decoder.decode(MeetingMetadata.self, from: Data(contentsOf: metadataURL))
         let transcriptURL = directory.appendingPathComponent("transcript.md")
         let summaryURL = directory.appendingPathComponent("summary.md")
+        let structuredSummaryURL = directory.appendingPathComponent("summary.json")
         let transcript = (try? String(contentsOf: transcriptURL, encoding: .utf8)) ?? ""
         let summary = FileManager.default.fileExists(atPath: summaryURL.path)
             ? try? String(contentsOf: summaryURL, encoding: .utf8)
             : nil
-        return SavedMeeting(directory: directory, metadata: metadata, transcript: transcript, summary: summary)
+        let structuredSummary: MeetingSummary?
+        if FileManager.default.fileExists(atPath: structuredSummaryURL.path) {
+            structuredSummary = try? JSONDecoder().decode(MeetingSummary.self, from: Data(contentsOf: structuredSummaryURL))
+        } else {
+            structuredSummary = nil
+        }
+        return SavedMeeting(
+            directory: directory,
+            metadata: metadata,
+            transcript: transcript,
+            summary: summary,
+            structuredSummary: structuredSummary
+        )
     }
 }
