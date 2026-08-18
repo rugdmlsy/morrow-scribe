@@ -13,7 +13,7 @@ struct MorrowScribeDesktopApp: App {
                 .task {
                     while !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(1))
-                        model.refreshLibraryKeepingSelection()
+                        model.refreshLiveState()
                     }
                 }
         }
@@ -68,14 +68,17 @@ final class ScribeViewModel: ObservableObject {
     var llmConfigured: Bool { llmConfiguration.isConfigured }
 
     func refreshLibraryKeepingSelection() {
-        accessibilityTrusted = SlackAXSession().accessibilityTrusted
+        let trusted = SlackAXSession().accessibilityTrusted
+        if accessibilityTrusted != trusted { accessibilityTrusted = trusted }
         if isTranscribing, !isStopping, let recordingStatus {
-            statusText = recordingStatus.current
+            let currentStatus = recordingStatus.current
+            if statusText != currentStatus { statusText = currentStatus }
         }
         let selected = selectedMeetingID
         let activePath = activeMeetingDirectory?.path
         do {
-            meetings = try MeetingLibrary.loadAll()
+            let loaded = try MeetingLibrary.loadAll()
+            if meetings != loaded { meetings = loaded }
             if let activePath, meetings.contains(where: { $0.id == activePath }) {
                 selectedMeetingID = activePath
             } else if let selected, meetings.contains(where: { $0.id == selected }) {
@@ -85,6 +88,33 @@ final class ScribeViewModel: ObservableObject {
             }
         } catch {
             errorText = "Could not read meetings: \(error)"
+        }
+    }
+
+    func refreshLiveState() {
+        let trusted = SlackAXSession().accessibilityTrusted
+        if accessibilityTrusted != trusted { accessibilityTrusted = trusted }
+
+        if isTranscribing, !isStopping, let recordingStatus {
+            let currentStatus = recordingStatus.current
+            if statusText != currentStatus { statusText = currentStatus }
+        }
+
+        guard let directory = activeMeetingDirectory else { return }
+        do {
+            guard let refreshed = try MeetingLibrary.loadMeeting(at: directory) else {
+                refreshLibraryKeepingSelection()
+                return
+            }
+            if let index = meetings.firstIndex(where: { $0.id == refreshed.id }) {
+                if meetings[index] != refreshed {
+                    meetings[index] = refreshed
+                }
+            } else {
+                refreshLibraryKeepingSelection()
+            }
+        } catch {
+            errorText = "Could not refresh active meeting: \(error)"
         }
     }
 
@@ -260,6 +290,7 @@ struct ContentView: View {
     @State private var showRenameSheet = false
     @State private var showDeleteConfirmation = false
     @State private var showLLMSettings = false
+    @State private var markdownPreviewEnabled = false
 
     var body: some View {
         NavigationSplitView {
@@ -377,27 +408,45 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 meetingHeader(meeting)
                 Divider()
-                Picker("Content", selection: $model.detailTab) {
-                    ForEach(ScribeViewModel.DetailTab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
+                ZStack {
+                    Picker("Content", selection: $model.detailTab) {
+                        ForEach(ScribeViewModel.DetailTab.allCases) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
+
+                    HStack {
+                        Spacer()
+                        Toggle(isOn: $markdownPreviewEnabled) {
+                            Label("Markdown", systemImage: "doc.richtext")
+                        }
+                        .toggleStyle(.button)
+                        .help(markdownPreviewEnabled ? "Show standard view" : "Render Markdown preview")
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 320)
                 .padding(12)
 
                 Divider()
                 switch model.detailTab {
                 case .transcript:
-                    ScrollView {
-                        Text(meeting.transcript.isEmpty ? "No transcript content yet." : meeting.transcript)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(20)
-                    }
+                    MarkdownDocumentView(
+                        markdown: meeting.transcript.isEmpty ? "No transcript content yet." : meeting.transcript,
+                        preview: markdownPreviewEnabled
+                    )
                 case .summary:
-                    SummaryDetailView(meeting: meeting)
+                    if markdownPreviewEnabled,
+                       let summaryMarkdown = meeting.summary,
+                       !summaryMarkdown.isEmpty {
+                        MarkdownDocumentView(markdown: summaryMarkdown, preview: true)
+                    } else {
+                        SummaryDetailView(
+                            structuredSummary: meeting.structuredSummary,
+                            legacySummary: meeting.summary
+                        )
+                        .equatable()
+                    }
                 }
             }
         } else {
@@ -711,15 +760,20 @@ private struct LLMSettingsView: View {
     }
 }
 
-private struct SummaryDetailView: View {
-    let meeting: SavedMeeting
+private struct SummaryDetailView: View, Equatable {
+    let structuredSummary: MeetingSummary?
+    let legacySummary: String?
 
     private let gridColumns = [
         GridItem(.adaptive(minimum: 300, maximum: 520), spacing: 14, alignment: .top)
     ]
 
+    nonisolated static func == (lhs: SummaryDetailView, rhs: SummaryDetailView) -> Bool {
+        lhs.structuredSummary == rhs.structuredSummary && lhs.legacySummary == rhs.legacySummary
+    }
+
     var body: some View {
-        if let summary = meeting.structuredSummary {
+        if let summary = structuredSummary {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if !summary.tldr.isEmpty {
@@ -776,14 +830,8 @@ private struct SummaryDetailView: View {
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .top)
             }
-        } else if let legacySummary = meeting.summary, !legacySummary.isEmpty {
-            ScrollView {
-                Text(legacySummary)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(20)
-            }
+        } else if let legacySummary, !legacySummary.isEmpty {
+            MarkdownDocumentView(markdown: legacySummary, preview: false)
         } else {
             ContentUnavailableView(
                 "No summary yet",

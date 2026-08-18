@@ -9,9 +9,18 @@ let package = Package(
         .executable(name: "morrow-scribe", targets: ["morrow-scribe"]),
         .executable(name: "MorrowScribeApp", targets: ["MorrowScribeApp"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0"),
+    ],
     targets: [
         .target(name: "MorrowScribeCore"),
         .executableTarget(name: "morrow-scribe", dependencies: ["MorrowScribeCore"]),
-        .executableTarget(name: "MorrowScribeApp", dependencies: ["MorrowScribeCore"]),
+        .executableTarget(
+            name: "MorrowScribeApp",
+            dependencies: [
+                "MorrowScribeCore",
+                .product(name: "Markdown", package: "swift-markdown"),
+            ]
+        ),
     ]
 )
