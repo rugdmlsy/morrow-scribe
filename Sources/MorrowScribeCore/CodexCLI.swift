@@ -1,7 +1,8 @@
 import Foundation
 
 public enum CodexCLI {
-    private static let timeout: TimeInterval = 180
+    private static let structuredTimeout: TimeInterval = 300
+    private static let unstructuredTimeout: TimeInterval = 120
 
     public static func resolveExecutable(configuredPath: String = "") -> String? {
         let trimmed = configuredPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -73,6 +74,13 @@ public enum CodexCLI {
             arguments.append(contentsOf: ["--model", model])
         }
 
+        let effort = configuration.codexReasoningEffort
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if ["minimal", "low", "medium", "high", "xhigh"].contains(effort) {
+            arguments.append(contentsOf: ["-c", "model_reasoning_effort=\"\(effort)\""])
+        }
+
         if structuredOutput {
             let schemaURL = directory.appendingPathComponent("meeting-summary.schema.json")
             try Self.summarySchema.write(to: schemaURL, atomically: true, encoding: .utf8)
@@ -106,7 +114,7 @@ public enum CodexCLI {
         try stdin.fileHandleForWriting.write(contentsOf: promptData)
         try stdin.fileHandleForWriting.close()
 
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = Date().addingTimeInterval(structuredOutput ? structuredTimeout : unstructuredTimeout)
         while process.isRunning, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -161,36 +169,26 @@ public enum CodexCLI {
         "sourceWarnings": {"type": "array", "items": {"type": "string"}}
       },
       "$defs": {
-        "evidence": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["speaker", "timestamp", "quote"],
-          "properties": {
-            "speaker": {"type": ["string", "null"]},
-            "timestamp": {"type": ["string", "null"]},
-            "quote": {"type": ["string", "null"]}
-          }
-        },
         "point": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["text", "evidence", "confidence"],
+          "required": ["text", "evidenceRefs", "confidence"],
           "properties": {
             "text": {"type": "string"},
-            "evidence": {"anyOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]},
+            "evidenceRefs": {"type": "array", "maxItems": 3, "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
           }
         },
         "action": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["text", "owner", "deadline", "explicitness", "evidence", "confidence"],
+          "required": ["text", "owner", "deadline", "explicitness", "evidenceRefs", "confidence"],
           "properties": {
             "text": {"type": "string"},
             "owner": {"type": ["string", "null"]},
             "deadline": {"type": ["string", "null"]},
             "explicitness": {"type": "string", "enum": ["explicit", "inferred"]},
-            "evidence": {"anyOf": [{"$ref": "#/$defs/evidence"}, {"type": "null"}]},
+            "evidenceRefs": {"type": "array", "maxItems": 3, "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
           }
         },

@@ -171,10 +171,14 @@ public enum MorrowScribeSelfTest {
         let prompt = MeetingExport.summaryPrompt(entries: entries)
         guard prompt.contains("Empty is better than guessed"),
               prompt.contains("A decision is something actually agreed/decided"),
-              prompt.contains("[00:00] [Alice] [slack_ax_side_by_side] We will ship Friday."),
-              prompt.contains("[01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
+              prompt.contains("evidenceRefs"),
+              prompt.contains("Do not inherit a nearby deadline"),
+              prompt.contains("[E1] [00:00] [Alice] [slack_ax_side_by_side] We will ship Friday."),
+              prompt.contains("[E2] [01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
             throw SelfTestError.failed("summary prompt contract failed")
         }
+        // Deliberately use the legacy single-evidence schema here to guarantee old summary.json
+        // files remain readable after the schema-v2 multi-evidence migration.
         let structuredSummary = try MeetingSummary.decodeModelOutput(
             """
             ```json
@@ -193,11 +197,54 @@ public enum MorrowScribeSelfTest {
             """
         )
         guard structuredSummary.actionItems.first?.owner == "Bob",
+              structuredSummary.tldr.first?.evidence.count == 1,
               structuredSummary.markdown.contains("## Decisions"),
-              structuredSummary.markdown.contains("- [ ] Update the prototype — Owner: Bob; Deadline: tomorrow") else {
+              structuredSummary.markdown.contains("- [ ] Update the prototype — Owner: Bob; Deadline: tomorrow"),
+              !structuredSummary.conciseMarkdown.contains("## Risks / Blockers"),
+              !structuredSummary.conciseMarkdown.contains("Evidence:") else {
             throw SelfTestError.failed("structured summary parsing/export failed")
         }
         passed.append("structured summary")
+
+        let multiEvidenceSummary = try MeetingSummary.decodeModelOutput(
+            """
+            {
+              "schemaVersion": 2,
+              "tldr": [],
+              "decisions": [{"text":"Ship Friday after approval","evidence":[{"speaker":"Alice","timestamp":"00:00","quote":"We will ship Friday."},{"speaker":"Bob","timestamp":"01:05","quote":"I'll update the prototype tomorrow."}],"confidence":"high"}],
+              "actionItems": [], "nextSteps": [], "openQuestions": [], "risks": [], "sections": [], "sourceWarnings": []
+            }
+            """
+        )
+        guard multiEvidenceSummary.decisions.first?.evidence.count == 2 else {
+            throw SelfTestError.failed("summary multi-evidence decoding failed")
+        }
+        passed.append("summary multi-evidence")
+
+        let referenceSummary = try MeetingSummary.decodeModelOutput(
+            """
+            {
+              "schemaVersion": 2,
+              "tldr": [{"text":"Ship Friday","evidenceRefs":["E1"],"confidence":"high"}],
+              "decisions": [{"text":"Ship Friday and update next","evidenceRefs":["E1","E2"],"confidence":"high"}],
+              "actionItems": [{"text":"Update the prototype","owner":"Bob","deadline":"tomorrow","explicitness":"explicit","evidenceRefs":["E2"],"confidence":"high"}],
+              "nextSteps": [], "openQuestions": [],
+              "risks": [{"text":"Bad reference probe","evidenceRefs":["E999"],"confidence":"high"}],
+              "sections": [], "sourceWarnings": []
+            }
+            """,
+            entries: entries,
+            timelineOrigin: summaryStart
+        )
+        guard referenceSummary.tldr.first?.evidence.first?.quote == "We will ship Friday.",
+              referenceSummary.decisions.first?.evidence.count == 2,
+              referenceSummary.actionItems.first?.evidence.first?.speaker == "Bob",
+              referenceSummary.risks.first?.evidence.isEmpty == true,
+              referenceSummary.risks.first?.confidence == .low,
+              referenceSummary.sourceWarnings.contains(where: { $0.contains("ignored 1 model evidence reference") }) else {
+            throw SelfTestError.failed("summary evidence-reference resolution failed")
+        }
+        passed.append("summary evidence references")
 
         let evidenceProbe = MeetingSummary(
             tldr: [
@@ -216,17 +263,56 @@ public enum MorrowScribeSelfTest {
             ]
         ).grounded(against: entries, timelineOrigin: summaryStart)
         let chunks = SummaryClient.transcriptChunks(entries: entries, maxCharacters: 70)
-        guard evidenceProbe.tldr.first?.evidence?.speaker == "Alice",
-              evidenceProbe.tldr.first?.evidence?.timestamp == "00:00",
-              evidenceProbe.decisions.first?.evidence == nil,
+        guard evidenceProbe.tldr.first?.evidence.first?.speaker == "Alice",
+              evidenceProbe.tldr.first?.evidence.first?.timestamp == "00:00",
+              evidenceProbe.decisions.first?.evidence.isEmpty == true,
               evidenceProbe.decisions.first?.confidence == .low,
               evidenceProbe.sourceWarnings.contains(where: { $0.contains("removed 1 model evidence") }),
               chunks.count == 2,
               MeetingSummaryPrompt.build(entries: chunks[1], timelineOrigin: summaryStart)
-                .contains("[01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
+                .contains("[E1] [01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
             throw SelfTestError.failed("summary evidence grounding or chunk timeline failed")
         }
         passed.append("summary grounding and chunking")
+
+        let reduced = MeetingSummaryReducer.reduce([
+            MeetingSummary(
+                tldr: [SummaryPoint(text: "Ship Friday", confidence: .high)],
+                decisions: [SummaryPoint(text: "The release ships Friday", confidence: .high)],
+                actionItems: [SummaryActionItem(text: "Update the prototype", owner: "Bob", deadline: "tomorrow", evidence: entries.isEmpty ? [] : [SummaryEvidence(speaker: "Bob", timestamp: "01:05", quote: "I'll update the prototype tomorrow.")], confidence: .high)],
+                nextSteps: [SummaryPoint(text: "Update the prototype", confidence: .medium)]
+            ),
+            MeetingSummary(
+                tldr: [SummaryPoint(text: "Ship Friday", confidence: .medium)],
+                decisions: [SummaryPoint(text: "The release ships Friday", confidence: .medium)],
+                actionItems: [SummaryActionItem(text: "Update prototype", owner: "Bob", deadline: "tomorrow", confidence: .medium)]
+            ),
+        ])
+        guard reduced.tldr.count == 1 else {
+            throw SelfTestError.failed("deterministic reducer did not dedupe TLDR")
+        }
+        guard reduced.decisions.count == 1 else {
+            throw SelfTestError.failed("deterministic reducer did not dedupe decisions")
+        }
+        guard reduced.actionItems.count == 1 else {
+            throw SelfTestError.failed("deterministic reducer did not dedupe actions")
+        }
+        guard reduced.nextSteps.isEmpty else {
+            throw SelfTestError.failed("deterministic reducer retained action-equivalent next step")
+        }
+        guard !SummaryClient.hasUnsupportedPolishFacts(
+            "Bob updates the prototype tomorrow.",
+            groundedCorpus: "Update the prototype | Owner: Bob | Deadline: tomorrow"
+        ) else {
+            throw SelfTestError.failed("polish fact gate rejected supported wording")
+        }
+        guard SummaryClient.hasUnsupportedPolishFacts(
+            "Bob updates the prototype Monday.",
+            groundedCorpus: "Update the prototype | Owner: Bob | Deadline: tomorrow"
+        ) else {
+            throw SelfTestError.failed("polish fact gate accepted a new deadline")
+        }
+        passed.append("summary reducer and polish gate")
 
         let apiConfiguration = SummaryConfiguration(
             provider: .openAICompatible,

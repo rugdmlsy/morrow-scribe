@@ -49,6 +49,7 @@ public struct SummaryConfiguration: Hashable, Sendable {
     public var apiKey: String
     public var codexPath: String
     public var codexModel: String
+    public var codexReasoningEffort: String
 
     public init(
         provider: SummaryProvider = .openAICompatible,
@@ -56,7 +57,8 @@ public struct SummaryConfiguration: Hashable, Sendable {
         model: String = "",
         apiKey: String = "",
         codexPath: String = "",
-        codexModel: String = ""
+        codexModel: String = "",
+        codexReasoningEffort: String = ""
     ) {
         self.provider = provider
         self.baseURL = baseURL
@@ -64,6 +66,7 @@ public struct SummaryConfiguration: Hashable, Sendable {
         self.apiKey = apiKey
         self.codexPath = codexPath
         self.codexModel = codexModel
+        self.codexReasoningEffort = codexReasoningEffort
     }
 
     public var isConfigured: Bool {
@@ -83,6 +86,7 @@ public enum SummaryConfigurationStore {
     private static let defaultsModelKey = "llm.model"
     private static let defaultsCodexPathKey = "llm.codexPath"
     private static let defaultsCodexModelKey = "llm.codexModel"
+    private static let defaultsCodexReasoningEffortKey = "llm.codexReasoningEffort"
     private static let keychainService = "com.morrow.scribe.llm"
     private static let keychainAccount = "api-key"
 
@@ -95,13 +99,15 @@ public enum SummaryConfigurationStore {
         let storedKey = loadAPIKey() ?? ""
         let storedCodexPath = defaults.string(forKey: defaultsCodexPathKey) ?? ""
         let storedCodexModel = defaults.string(forKey: defaultsCodexModelKey) ?? ""
+        let storedCodexReasoningEffort = defaults.string(forKey: defaultsCodexReasoningEffortKey) ?? ""
         let stored = SummaryConfiguration(
             provider: storedProvider,
             baseURL: storedBase,
             model: storedModel,
             apiKey: storedKey,
             codexPath: storedCodexPath,
-            codexModel: storedCodexModel
+            codexModel: storedCodexModel,
+            codexReasoningEffort: storedCodexReasoningEffort
         )
         if storedProviderRaw != nil { return stored }
         if stored.isConfigured { return stored }
@@ -115,6 +121,7 @@ public enum SummaryConfigurationStore {
         defaults.set(configuration.model.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsModelKey)
         defaults.set(configuration.codexPath.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsCodexPathKey)
         defaults.set(configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsCodexModelKey)
+        defaults.set(configuration.codexReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsCodexReasoningEffortKey)
         try saveAPIKey(configuration.apiKey)
     }
 
@@ -131,7 +138,8 @@ public enum SummaryConfigurationStore {
             model: env["MORROW_SCRIBE_LLM_MODEL"] ?? "",
             apiKey: env["MORROW_SCRIBE_LLM_API_KEY"] ?? "",
             codexPath: env["MORROW_SCRIBE_CODEX_PATH"] ?? "",
-            codexModel: env["MORROW_SCRIBE_CODEX_MODEL"] ?? ""
+            codexModel: env["MORROW_SCRIBE_CODEX_MODEL"] ?? "",
+            codexReasoningEffort: env["MORROW_SCRIBE_CODEX_REASONING_EFFORT"] ?? ""
         )
     }
 
@@ -178,7 +186,6 @@ public enum SummaryConfigurationStore {
 
 public enum SummaryClient {
     static let maxTranscriptCharactersPerRequest = 24_000
-    static let maxSummariesPerMergeRequest = 6
 
     public static var isConfigured: Bool {
         SummaryConfigurationStore.load().isConfigured
@@ -214,7 +221,11 @@ public enum SummaryClient {
                 configuration: config,
                 structuredOutput: true
             )
-            let partial = try MeetingSummary.decodeModelOutput(output)
+            let partial = try MeetingSummary.decodeModelOutput(
+                output,
+                entries: chunk,
+                timelineOrigin: timelineOrigin
+            )
                 .grounded(against: chunk, timelineOrigin: timelineOrigin)
             if !partial.isEmpty { partials.append(partial) }
         }
@@ -223,22 +234,24 @@ public enum SummaryClient {
             throw SummaryError.invalidStructuredResponse("summary contained no useful content")
         }
 
-        let summary: MeetingSummary
-        if partials.count == 1 {
-            summary = partials[0]
-        } else {
-            summary = try await merge(
-                summaries: partials,
-                entries: entries,
-                timelineOrigin: timelineOrigin,
-                configuration: config
-            )
-        }
-        let grounded = summary.grounded(against: entries, timelineOrigin: timelineOrigin)
+        // Chunk extraction is the only LLM pass allowed to create factual atoms. Cross-chunk
+        // consolidation is deterministic so a second model pass cannot promote a proposal to
+        // a decision, invent an owner/deadline, or discard evidence while re-summarizing.
+        let reduced = MeetingSummaryReducer.reduce(partials)
+        let grounded = reduced.grounded(against: entries, timelineOrigin: timelineOrigin)
         guard !grounded.isEmpty else {
             throw SummaryError.invalidStructuredResponse("summary contained no useful content")
         }
-        return grounded
+
+        // A single extraction already saw the complete transcript and can write a coherent
+        // TL;DR directly. Reserve the extra polish call for true multi-chunk meetings, where
+        // the deterministic reducer intentionally does not synthesize new prose.
+        guard partials.count > 1 else { return grounded }
+
+        // Readability polish is deliberately narrow and non-critical. It can rewrite only
+        // the TL;DR, must cite immutable source atom IDs, passes a no-new-fact-token gate, and
+        // falls back to the deterministic summary on any provider/validation failure.
+        return (try? await polishTLDR(grounded, configuration: config)) ?? grounded
     }
 
     public static func summarize(prompt: String) async throws -> String {
@@ -337,80 +350,189 @@ public enum SummaryClient {
         return result
     }
 
-    private static func merge(
-        summaries: [MeetingSummary],
-        entries: [TranscriptEntry],
-        timelineOrigin: Date,
-        configuration: SummaryConfiguration
-    ) async throws -> MeetingSummary {
-        var current = summaries
-        while current.count > 1 {
-            var mergedRound: [MeetingSummary] = []
-            var index = 0
-            while index < current.count {
-                let end = min(index + maxSummariesPerMergeRequest, current.count)
-                let batch = Array(current[index..<end])
-                if batch.count == 1 {
-                    mergedRound.append(batch[0])
-                } else {
-                    let output = try await complete(
-                        prompt: try mergePrompt(summaries: batch),
-                        configuration: configuration,
-                        structuredOutput: true
-                    )
-                    let merged = try MeetingSummary.decodeModelOutput(output)
-                        .grounded(against: entries, timelineOrigin: timelineOrigin)
-                    guard !merged.isEmpty else {
-                        throw SummaryError.invalidStructuredResponse("merge pass returned no useful content")
-                    }
-                    mergedRound.append(merged)
-                }
-                index = end
-            }
-            current = mergedRound
-        }
-        return current[0]
+    private struct PolishFact: Codable {
+        let id: String
+        let text: String
     }
 
-    private static func mergePrompt(summaries: [MeetingSummary]) throws -> String {
+    private struct PolishLine: Codable {
+        let text: String
+        let sourceIDs: [String]
+    }
+
+    private struct PolishResponse: Codable {
+        let summary: [PolishLine]
+    }
+
+    private struct GroundedPolishSource {
+        let fact: PolishFact
+        let evidence: [SummaryEvidence]
+        let confidence: SummaryConfidence
+    }
+
+    private static func polishTLDR(
+        _ summary: MeetingSummary,
+        configuration: SummaryConfiguration
+    ) async throws -> MeetingSummary {
+        let sources = polishSources(summary)
+        guard sources.count >= 2 else { return summary }
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let payloads = try summaries.map { summary in
-            String(decoding: try encoder.encode(summary), as: UTF8.self)
-        }
-        return """
-        You are Morrow Scribe. Merge the partial meeting summaries below into one compact final summary.
+        let sourcePayload = String(
+            decoding: try encoder.encode(sources.map(\.fact)),
+            as: UTF8.self
+        )
+        let prompt = """
+        You are Morrow Scribe's final summary polisher. The FACTS below are immutable, already grounded meeting atoms.
 
-        These partial summaries were generated from disjoint chunks of the same transcript. Treat them as your only source material.
+        Rewrite them into 3-5 short, clear summary sentences in the same dominant language as the facts.
+        Lead with the meeting's scope/outcome, then the most important decisions, then the most important committed next step.
 
-        MERGE RULES (non-negotiable):
-        - Do not add facts, names, owners, deadlines, decisions, risks, or conclusions that are absent from the partial summaries.
-        - Deduplicate repeated or overlapping points while preserving distinct information.
-        - A decision must remain a real decision; do not promote discussion, proposals, or next steps into decisions.
-        - Preserve action-item owner/deadline only when already present in a partial summary.
-        - Preserve evidence quotes verbatim. Never rewrite or invent an evidence quote, speaker, or timestamp.
-        - Prefer 2-5 high-value TL;DR bullets for the whole meeting rather than one bullet per chunk.
-        - Keep useful topic-specific sections, but merge redundant sections and omit empty sections.
-        - Keep sourceWarnings that still matter; deduplicate equivalent warnings.
-        - Write in the same dominant language as the partial summaries.
+        STRICT RULES:
+        - Use ONLY information present in FACTS. Introduce no new fact, name, number, date, deadline, owner, system, or conclusion.
+        - Every sentence must cite 1-3 sourceIDs whose facts fully support that sentence.
+        - A sentence may combine facts only when all needed sourceIDs are listed.
+        - Do not change the status of a proposal, decision, question, risk, or commitment.
+        - Do not infer deadlines or owners.
+        - No filler, headings, Markdown, or chronology narration.
+        - Prefer fewer sentences when they cover the important outcome cleanly.
 
-        Return ONLY one valid JSON object matching this shape and no Markdown fences:
-        {
-          "schemaVersion": 1,
-          "tldr": [{"text":"takeaway","evidence":{"speaker":"name or null","timestamp":"MM:SS","quote":"verbatim quote or null"},"confidence":"high|medium|low"}],
-          "decisions": [{"text":"decision","evidence":null,"confidence":"high|medium|low"}],
-          "actionItems": [{"text":"task","owner":null,"deadline":null,"explicitness":"explicit|inferred","evidence":null,"confidence":"high|medium|low"}],
-          "nextSteps": [{"text":"next step","evidence":null,"confidence":"high|medium|low"}],
-          "openQuestions": [{"text":"question","evidence":null,"confidence":"high|medium|low"}],
-          "risks": [{"text":"risk or blocker","evidence":null,"confidence":"high|medium|low"}],
-          "sections": [{"title":"Topic-specific title","bullets":[{"text":"note","evidence":null,"confidence":"high|medium|low"}]}],
-          "sourceWarnings": []
-        }
+        Return ONLY JSON in this shape:
+        {"summary":[{"text":"sentence","sourceIDs":["D1","A1"]}]}
 
-        Partial summaries:
-        ---
-        \(payloads.joined(separator: "\n"))
-        ---
+        FACTS:
+        \(sourcePayload)
         """
+
+        let output = try await complete(
+            prompt: prompt,
+            configuration: configuration,
+            structuredOutput: false
+        )
+        let object = try extractJSONObject(output)
+        let response = try JSONDecoder().decode(PolishResponse.self, from: Data(object.utf8))
+        guard (2...5).contains(response.summary.count) else { return summary }
+
+        let byID = Dictionary(uniqueKeysWithValues: sources.map { ($0.fact.id, $0) })
+        let corpus = sources.map(\.fact.text).joined(separator: "\n")
+        var polished: [SummaryPoint] = []
+        for line in response.summary {
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ids = Array(line.sourceIDs.prefix(3))
+            guard !text.isEmpty, !ids.isEmpty, ids.allSatisfy({ byID[$0] != nil }) else { return summary }
+            guard !hasUnsupportedPolishFacts(text, groundedCorpus: corpus) else { return summary }
+
+            let cited = ids.compactMap { byID[$0] }
+            let evidence = dedupeEvidence(cited.flatMap(\.evidence))
+            let confidence = cited.map(\.confidence).min(by: { $0.rank < $1.rank }) ?? .medium
+            polished.append(SummaryPoint(text: text, evidence: evidence, confidence: confidence))
+        }
+
+        return MeetingSummary(
+            schemaVersion: 2,
+            tldr: MeetingSummaryReducer.reduce([MeetingSummary(tldr: polished)]).tldr,
+            decisions: summary.decisions,
+            actionItems: summary.actionItems,
+            nextSteps: summary.nextSteps,
+            openQuestions: summary.openQuestions,
+            risks: summary.risks,
+            sections: summary.sections,
+            sourceWarnings: summary.sourceWarnings
+        )
+    }
+
+    private static func polishSources(_ summary: MeetingSummary) -> [GroundedPolishSource] {
+        var out: [GroundedPolishSource] = []
+        func append(prefix: String, point: SummaryPoint, index: Int) {
+            out.append(GroundedPolishSource(
+                fact: PolishFact(id: "\(prefix)\(index + 1)", text: point.text),
+                evidence: point.evidence,
+                confidence: point.confidence
+            ))
+        }
+
+        for (index, point) in summary.tldr.enumerated() { append(prefix: "T", point: point, index: index) }
+        for (index, point) in summary.decisions.enumerated() { append(prefix: "D", point: point, index: index) }
+        for (index, item) in summary.actionItems.enumerated() {
+            var text = item.text
+            if let owner = item.owner { text += " | Owner: \(owner)" }
+            if let deadline = item.deadline { text += " | Deadline: \(deadline)" }
+            out.append(GroundedPolishSource(
+                fact: PolishFact(id: "A\(index + 1)", text: text),
+                evidence: item.evidence,
+                confidence: item.confidence
+            ))
+        }
+        for (index, point) in summary.openQuestions.enumerated() { append(prefix: "Q", point: point, index: index) }
+        for (index, point) in summary.risks.prefix(3).enumerated() { append(prefix: "R", point: point, index: index) }
+        return out
+    }
+
+    private static func dedupeEvidence(_ evidence: [SummaryEvidence]) -> [SummaryEvidence] {
+        var seen = Set<SummaryEvidence>()
+        return evidence.filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(4).map { $0 }
+    }
+
+    static func hasUnsupportedPolishFacts(_ polished: String, groundedCorpus: String) -> Bool {
+        let sourceTokens = factShapedTokens(groundedCorpus)
+        return !factShapedTokens(polished).isSubset(of: sourceTokens)
+    }
+
+    private static func factShapedTokens(_ text: String) -> Set<String> {
+        var tokens = Set<String>()
+        let lower = text.lowercased()
+        let latinParts = lower.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let allowedGeneric: Set<String> = [
+            "the", "and", "for", "with", "from", "into", "only", "use", "using", "will", "while",
+            "first", "phase", "meeting", "team", "summary", "key", "next", "step", "steps", "baseline"
+        ]
+        for part in latinParts where part.count >= 2 && !allowedGeneric.contains(part) {
+            // ASCII technical terms, names and numeric expressions are fact-shaped here.
+            if part.unicodeScalars.allSatisfy({ $0.value < 128 }) {
+                tokens.insert(canonicalFactToken(part))
+            }
+        }
+
+        let calendarTerms = [
+            "今天", "明天", "后天", "本周", "下周", "月底", "年底",
+            "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
+            "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日", "星期天"
+        ]
+        for term in calendarTerms where text.contains(term) { tokens.insert(term) }
+
+        let chineseNumerals = Set("零〇一二三四五六七八九十百千万亿两")
+        var numeralRun = ""
+        func flushNumerals() {
+            if !numeralRun.isEmpty { tokens.insert("cn:\(numeralRun)") }
+            numeralRun.removeAll(keepingCapacity: true)
+        }
+        for character in text {
+            if chineseNumerals.contains(character) {
+                numeralRun.append(character)
+            } else {
+                flushNumerals()
+            }
+        }
+        flushNumerals()
+        return tokens
+    }
+
+    private static func canonicalFactToken(_ token: String) -> String {
+        if token.count > 4, token.hasSuffix("ies") {
+            return String(token.dropLast(3)) + "y"
+        }
+        if token.count > 4, token.hasSuffix("s"), !token.hasSuffix("ss") {
+            return String(token.dropLast())
+        }
+        return token
+    }
+
+    private static func extractJSONObject(_ output: String) throws -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first <= last else {
+            throw SummaryError.invalidStructuredResponse("polish response did not contain a JSON object")
+        }
+        return String(trimmed[first...last])
     }
 }

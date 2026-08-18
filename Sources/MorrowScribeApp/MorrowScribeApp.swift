@@ -291,6 +291,7 @@ struct ContentView: View {
     @State private var showDeleteConfirmation = false
     @State private var showLLMSettings = false
     @State private var markdownPreviewEnabled = false
+    @State private var summaryPresentationMode: SummaryPresentationMode = .concise
 
     var body: some View {
         NavigationSplitView {
@@ -419,6 +420,16 @@ struct ContentView: View {
 
                     HStack {
                         Spacer()
+                        if model.detailTab == .summary, meeting.structuredSummary != nil {
+                            Picker("Summary detail", selection: $summaryPresentationMode) {
+                                ForEach(SummaryPresentationMode.allCases) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 170)
+                            .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
+                        }
                         Toggle(isOn: $markdownPreviewEnabled) {
                             Label("Markdown", systemImage: "doc.richtext")
                         }
@@ -437,13 +448,14 @@ struct ContentView: View {
                     )
                 case .summary:
                     if markdownPreviewEnabled,
-                       let summaryMarkdown = meeting.summary,
+                       let summaryMarkdown = meeting.structuredSummary?.markdown(mode: summaryPresentationMode) ?? meeting.summary,
                        !summaryMarkdown.isEmpty {
                         MarkdownDocumentView(markdown: summaryMarkdown, preview: true)
                     } else {
                         SummaryDetailView(
                             structuredSummary: meeting.structuredSummary,
-                            legacySummary: meeting.summary
+                            legacySummary: meeting.summary,
+                            presentationMode: summaryPresentationMode
                         )
                         .equatable()
                     }
@@ -596,6 +608,7 @@ private struct LLMSettingsView: View {
     @State private var apiKey: String
     @State private var codexPath: String
     @State private var codexModel: String
+    @State private var codexReasoningEffort: String
     @State private var isTesting = false
     @State private var testResult: TestResult?
 
@@ -613,6 +626,7 @@ private struct LLMSettingsView: View {
         _apiKey = State(initialValue: initialConfiguration.apiKey)
         _codexPath = State(initialValue: initialConfiguration.codexPath)
         _codexModel = State(initialValue: initialConfiguration.codexModel)
+        _codexReasoningEffort = State(initialValue: initialConfiguration.codexReasoningEffort)
         self.onSave = onSave
         self.onCancel = onCancel
     }
@@ -624,7 +638,8 @@ private struct LLMSettingsView: View {
             model: model,
             apiKey: apiKey,
             codexPath: codexPath,
-            codexModel: codexModel
+            codexModel: codexModel,
+            codexReasoningEffort: codexReasoningEffort
         )
     }
 
@@ -676,6 +691,13 @@ private struct LLMSettingsView: View {
                 Form {
                     TextField("Codex executable", text: $codexPath, prompt: Text("Auto-detect codex"))
                     TextField("Model override", text: $codexModel, prompt: Text("Use Codex default"))
+                    Picker("Reasoning effort", selection: $codexReasoningEffort) {
+                        Text("Default").tag("")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                        Text("xHigh").tag("xhigh")
+                    }
                 }
                 .formStyle(.grouped)
 
@@ -763,13 +785,16 @@ private struct LLMSettingsView: View {
 private struct SummaryDetailView: View, Equatable {
     let structuredSummary: MeetingSummary?
     let legacySummary: String?
+    let presentationMode: SummaryPresentationMode
 
     private let gridColumns = [
         GridItem(.adaptive(minimum: 300, maximum: 520), spacing: 14, alignment: .top)
     ]
 
     nonisolated static func == (lhs: SummaryDetailView, rhs: SummaryDetailView) -> Bool {
-        lhs.structuredSummary == rhs.structuredSummary && lhs.legacySummary == rhs.legacySummary
+        lhs.structuredSummary == rhs.structuredSummary &&
+            lhs.legacySummary == rhs.legacySummary &&
+            lhs.presentationMode == rhs.presentationMode
     }
 
     var body: some View {
@@ -799,28 +824,32 @@ private struct SummaryDetailView: View, Equatable {
                                 }
                             }
                         }
-                        if !summary.nextSteps.isEmpty {
-                            pointCard(title: "Next Steps", systemImage: "arrow.right.circle", points: summary.nextSteps)
-                        }
                         if !summary.openQuestions.isEmpty {
                             pointCard(title: "Open Questions", systemImage: "questionmark.circle", points: summary.openQuestions)
                         }
-                        if !summary.risks.isEmpty {
-                            pointCard(title: "Risks / Blockers", systemImage: "exclamationmark.triangle", points: summary.risks)
+                        if presentationMode == .detailed {
+                            if !summary.nextSteps.isEmpty {
+                                pointCard(title: "Next Steps", systemImage: "arrow.right.circle", points: summary.nextSteps)
+                            }
+                            if !summary.risks.isEmpty {
+                                pointCard(title: "Risks / Blockers", systemImage: "exclamationmark.triangle", points: summary.risks)
+                            }
                         }
                     }
 
-                    ForEach(summary.sections) { section in
-                        pointCard(title: section.title, systemImage: "text.alignleft", points: section.bullets)
-                    }
+                    if presentationMode == .detailed {
+                        ForEach(summary.sections) { section in
+                            pointCard(title: section.title, systemImage: "text.alignleft", points: section.bullets)
+                        }
 
-                    if !summary.sourceWarnings.isEmpty {
-                        summaryCard(title: "Source Quality", systemImage: "waveform.badge.exclamationmark") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(summary.sourceWarnings, id: \.self) { warning in
-                                    Label(warning, systemImage: "info.circle")
-                                        .font(.callout)
-                                        .foregroundStyle(.secondary)
+                        if !summary.sourceWarnings.isEmpty {
+                            summaryCard(title: "Source Quality", systemImage: "waveform.badge.exclamationmark") {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(summary.sourceWarnings, id: \.self) { warning in
+                                        Label(warning, systemImage: "info.circle")
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
@@ -927,33 +956,54 @@ private struct SummaryActionItemView: View {
 }
 
 private struct SummaryEvidenceView: View {
-    let evidence: SummaryEvidence?
+    let evidence: [SummaryEvidence]
     let confidence: SummaryConfidence
+    @State private var isExpanded = false
 
-    private var metadata: String {
+    private func metadata(for evidence: SummaryEvidence) -> String {
         var parts: [String] = []
-        if let timestamp = evidence?.timestamp { parts.append(timestamp) }
-        if let speaker = evidence?.speaker { parts.append(speaker) }
-        if confidence != .high { parts.append("\(confidence.rawValue.capitalized) confidence") }
+        if let timestamp = evidence.timestamp { parts.append(timestamp) }
+        if let speaker = evidence.speaker { parts.append(speaker) }
         return parts.joined(separator: " · ")
     }
 
     var body: some View {
-        if evidence?.quote != nil || !metadata.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                if !metadata.isEmpty {
-                    Text(metadata)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+        if !evidence.isEmpty {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(evidence.enumerated()), id: \.offset) { _, item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            let meta = metadata(for: item)
+                            if !meta.isEmpty {
+                                Text(meta)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if let quote = item.quote {
+                                Text("“\(quote)”")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
                 }
-                if let quote = evidence?.quote {
-                    Text("“\(quote)”")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
+                .padding(.top, 4)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("\(evidence.count) source\(evidence.count == 1 ? "" : "s")")
+                    if confidence != .high {
+                        Text("· \(confidence.rawValue.capitalized) confidence")
+                    }
                 }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             }
+            .controlSize(.small)
+        } else if confidence != .high {
+            Text("\(confidence.rawValue.capitalized) confidence · no verified source quote")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
     }
 }
