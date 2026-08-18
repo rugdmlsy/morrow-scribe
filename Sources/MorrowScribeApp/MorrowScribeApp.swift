@@ -26,13 +26,19 @@ struct MorrowScribeDesktopApp: App {
 
 @MainActor
 final class ScribeViewModel: ObservableObject {
+    private static let autoSummarizeDefaultsKey = "summary.autoSummarize"
+
     @Published var meetings: [SavedMeeting] = []
     @Published var selectedMeetingID: String?
     @Published var meetingTitle = "Meeting"
     @Published var isTranscribing = false
     @Published var isStopping = false
     @Published var isSummarizing = false
-    @Published var autoSummarize = false
+    @Published var autoSummarize: Bool {
+        didSet {
+            UserDefaults.standard.set(autoSummarize, forKey: Self.autoSummarizeDefaultsKey)
+        }
+    }
     @Published var statusText = "Ready"
     @Published var errorText: String?
     @Published var detailTab: DetailTab = .transcript
@@ -50,6 +56,7 @@ final class ScribeViewModel: ObservableObject {
     }
 
     init() {
+        autoSummarize = UserDefaults.standard.bool(forKey: Self.autoSummarizeDefaultsKey)
         refreshLibraryKeepingSelection()
     }
 
@@ -537,6 +544,8 @@ private struct LLMSettingsView: View {
     @State private var baseURL: String
     @State private var model: String
     @State private var apiKey: String
+    @State private var isTesting = false
+    @State private var testResult: TestResult?
 
     let onSave: (SummaryConfiguration) -> Void
     let onCancel: () -> Void
@@ -555,6 +564,11 @@ private struct LLMSettingsView: View {
 
     private var configuration: SummaryConfiguration {
         SummaryConfiguration(baseURL: baseURL, model: model, apiKey: apiKey)
+    }
+
+    private enum TestResult {
+        case success
+        case failure(String)
     }
 
     var body: some View {
@@ -578,12 +592,36 @@ private struct LLMSettingsView: View {
             HStack(spacing: 8) {
                 Button("Use Ollama") {
                     baseURL = "http://127.0.0.1:11434/v1"
+                    testResult = nil
                 }
                 .buttonStyle(.bordered)
 
                 Text("Only the endpoint is filled; choose the local model you installed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Button(isTesting ? "Testing…" : "Test Connection") {
+                    testConnection()
+                }
+                .buttonStyle(.bordered)
+                .disabled(isTesting || !configuration.isConfigured)
+
+                if let testResult {
+                    switch testResult {
+                    case .success:
+                        Label("Connection works", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case let .failure(message):
+                        Label(message, systemImage: "xmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
                 Spacer()
             }
 
@@ -600,6 +638,22 @@ private struct LLMSettingsView: View {
         }
         .padding(24)
         .frame(width: 540)
+    }
+
+    private func testConnection() {
+        guard !isTesting, configuration.isConfigured else { return }
+        isTesting = true
+        testResult = nil
+        let configuration = configuration
+        Task {
+            do {
+                try await SummaryClient.test(configuration: configuration)
+                testResult = .success
+            } catch {
+                testResult = .failure(String(describing: error))
+            }
+            isTesting = false
+        }
     }
 }
 

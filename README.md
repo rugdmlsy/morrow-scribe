@@ -68,7 +68,8 @@ The GUI provides:
 - Transcript and summary content views
 - Reveal a meeting directory in Finder
 - Manual `Generate Summary` and `Auto summary` controls when an OpenAI-compatible LLM is configured
-- In-app LLM settings for endpoint/model; API keys are stored in macOS Keychain
+- In-app LLM settings for endpoint/model, including a lightweight connection test; API keys are stored in macOS Keychain
+- `Auto summary` preference persists across app launches
 - Structured summary preview with decisions, action items, next steps, open questions, risks, topic notes, evidence, and confidence
 
 Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**. The app bundle is signed with a stable designated requirement (`identifier "com.morrow.scribe"`) so rebuilding/updating the local app no longer invalidates the Accessibility grant. If upgrading from a build created before this fix, remove the old Accessibility entry and add `~/Applications/Morrow Scribe.app` once to replace the stale CDHash-based grant.
@@ -89,6 +90,8 @@ export MORROW_SCRIBE_LLM_API_KEY=<secret>
 ```
 
 The summarizer first requests grounded structured JSON and persists both `summary.json` and a portable `summary.md`. The prompt explicitly distinguishes decisions from discussion, requires owners/deadlines to be transcript-supported, prefers empty fields over guesses, and can attach speaker/timestamp/quote evidence plus confidence to important items.
+
+Long transcripts are split into bounded chunks, summarized on one meeting-wide timestamp axis, and then merged through one or more reduction passes. Evidence is checked again in code after every model pass: a quoted citation must match an actual transcript entry, and Morrow Scribe rewrites its speaker/timestamp from the matched entry. Unmatched model citations are removed, their item confidence is lowered, and the summary records a source-quality warning instead of presenting fabricated evidence.
 
 The native preview hides empty sections and surfaces the useful parts first: At a Glance, Decisions, Action Items, Next Steps, Open Questions, Risks / Blockers, plus optional topic-specific notes such as Research Questions or Technical Notes.
 

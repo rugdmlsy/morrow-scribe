@@ -112,8 +112,22 @@ public enum SummaryConfigurationStore {
 }
 
 public enum SummaryClient {
+    static let maxTranscriptCharactersPerRequest = 24_000
+    static let maxSummariesPerMergeRequest = 6
+
     public static var isConfigured: Bool {
         SummaryConfigurationStore.load().isConfigured
+    }
+
+    public static func test(configuration: SummaryConfiguration) async throws {
+        let marker = "MORROW_SCRIBE_OK"
+        let output = try await complete(
+            prompt: "Connection test. Reply with exactly \(marker) and nothing else.",
+            configuration: configuration
+        )
+        guard output.contains(marker) else {
+            throw SummaryError.invalidResponse
+        }
     }
 
     public static func summarize(
@@ -121,12 +135,43 @@ public enum SummaryClient {
         configuration: SummaryConfiguration? = nil
     ) async throws -> MeetingSummary {
         let config = configuration ?? SummaryConfigurationStore.load()
-        let output = try await complete(prompt: MeetingSummaryPrompt.build(entries: entries), configuration: config)
-        let summary = try MeetingSummary.decodeModelOutput(output)
-        guard !summary.isEmpty else {
+        guard let timelineOrigin = entries.first?.observedAt else {
+            throw SummaryError.invalidStructuredResponse("meeting has no transcript entries")
+        }
+
+        let chunks = transcriptChunks(entries: entries)
+        var partials: [MeetingSummary] = []
+        partials.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            let output = try await complete(
+                prompt: MeetingSummaryPrompt.build(entries: chunk, timelineOrigin: timelineOrigin),
+                configuration: config
+            )
+            let partial = try MeetingSummary.decodeModelOutput(output)
+                .grounded(against: chunk, timelineOrigin: timelineOrigin)
+            if !partial.isEmpty { partials.append(partial) }
+        }
+
+        guard !partials.isEmpty else {
             throw SummaryError.invalidStructuredResponse("summary contained no useful content")
         }
-        return summary
+
+        let summary: MeetingSummary
+        if partials.count == 1 {
+            summary = partials[0]
+        } else {
+            summary = try await merge(
+                summaries: partials,
+                entries: entries,
+                timelineOrigin: timelineOrigin,
+                configuration: config
+            )
+        }
+        let grounded = summary.grounded(against: entries, timelineOrigin: timelineOrigin)
+        guard !grounded.isEmpty else {
+            throw SummaryError.invalidStructuredResponse("summary contained no useful content")
+        }
+        return grounded
     }
 
     public static func summarize(prompt: String) async throws -> String {
@@ -161,7 +206,6 @@ public enum SummaryClient {
             "messages": [
                 ["role": "user", "content": prompt],
             ],
-            "temperature": 0.1,
         ])
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -177,5 +221,105 @@ public enum SummaryClient {
             throw SummaryError.invalidResponse
         }
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func transcriptChunks(
+        entries: [TranscriptEntry],
+        maxCharacters: Int = maxTranscriptCharactersPerRequest
+    ) -> [[TranscriptEntry]] {
+        guard !entries.isEmpty else { return [] }
+        let limit = max(1, maxCharacters)
+        var result: [[TranscriptEntry]] = []
+        var current: [TranscriptEntry] = []
+        var currentCharacters = 0
+
+        for entry in entries {
+            let estimatedCharacters = entry.text.count + (entry.speaker?.count ?? 7) + entry.source.count + 32
+            if !current.isEmpty, currentCharacters + estimatedCharacters > limit {
+                result.append(current)
+                current = []
+                currentCharacters = 0
+            }
+            current.append(entry)
+            currentCharacters += estimatedCharacters
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
+    }
+
+    private static func merge(
+        summaries: [MeetingSummary],
+        entries: [TranscriptEntry],
+        timelineOrigin: Date,
+        configuration: SummaryConfiguration
+    ) async throws -> MeetingSummary {
+        var current = summaries
+        while current.count > 1 {
+            var mergedRound: [MeetingSummary] = []
+            var index = 0
+            while index < current.count {
+                let end = min(index + maxSummariesPerMergeRequest, current.count)
+                let batch = Array(current[index..<end])
+                if batch.count == 1 {
+                    mergedRound.append(batch[0])
+                } else {
+                    let output = try await complete(
+                        prompt: try mergePrompt(summaries: batch),
+                        configuration: configuration
+                    )
+                    let merged = try MeetingSummary.decodeModelOutput(output)
+                        .grounded(against: entries, timelineOrigin: timelineOrigin)
+                    guard !merged.isEmpty else {
+                        throw SummaryError.invalidStructuredResponse("merge pass returned no useful content")
+                    }
+                    mergedRound.append(merged)
+                }
+                index = end
+            }
+            current = mergedRound
+        }
+        return current[0]
+    }
+
+    private static func mergePrompt(summaries: [MeetingSummary]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let payloads = try summaries.map { summary in
+            String(decoding: try encoder.encode(summary), as: UTF8.self)
+        }
+        return """
+        You are Morrow Scribe. Merge the partial meeting summaries below into one compact final summary.
+
+        These partial summaries were generated from disjoint chunks of the same transcript. Treat them as your only source material.
+
+        MERGE RULES (non-negotiable):
+        - Do not add facts, names, owners, deadlines, decisions, risks, or conclusions that are absent from the partial summaries.
+        - Deduplicate repeated or overlapping points while preserving distinct information.
+        - A decision must remain a real decision; do not promote discussion, proposals, or next steps into decisions.
+        - Preserve action-item owner/deadline only when already present in a partial summary.
+        - Preserve evidence quotes verbatim. Never rewrite or invent an evidence quote, speaker, or timestamp.
+        - Prefer 2-5 high-value TL;DR bullets for the whole meeting rather than one bullet per chunk.
+        - Keep useful topic-specific sections, but merge redundant sections and omit empty sections.
+        - Keep sourceWarnings that still matter; deduplicate equivalent warnings.
+        - Write in the same dominant language as the partial summaries.
+
+        Return ONLY one valid JSON object matching this shape and no Markdown fences:
+        {
+          "schemaVersion": 1,
+          "tldr": [{"text":"takeaway","evidence":{"speaker":"name or null","timestamp":"MM:SS","quote":"verbatim quote or null"},"confidence":"high|medium|low"}],
+          "decisions": [{"text":"decision","evidence":null,"confidence":"high|medium|low"}],
+          "actionItems": [{"text":"task","owner":null,"deadline":null,"explicitness":"explicit|inferred","evidence":null,"confidence":"high|medium|low"}],
+          "nextSteps": [{"text":"next step","evidence":null,"confidence":"high|medium|low"}],
+          "openQuestions": [{"text":"question","evidence":null,"confidence":"high|medium|low"}],
+          "risks": [{"text":"risk or blocker","evidence":null,"confidence":"high|medium|low"}],
+          "sections": [{"title":"Topic-specific title","bullets":[{"text":"note","evidence":null,"confidence":"high|medium|low"}]}],
+          "sourceWarnings": []
+        }
+
+        Partial summaries:
+        ---
+        \(payloads.joined(separator: "\n"))
+        ---
+        """
     }
 }

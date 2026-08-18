@@ -250,6 +250,68 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
             openQuestions.isEmpty && risks.isEmpty && sections.isEmpty
     }
 
+    public func grounded(
+        against entries: [TranscriptEntry],
+        timelineOrigin: Date? = nil
+    ) -> MeetingSummary {
+        guard !entries.isEmpty else { return self }
+        let origin = timelineOrigin ?? entries[0].observedAt
+        var rejectedEvidenceCount = 0
+
+        func groundedPoint(_ point: SummaryPoint) -> SummaryPoint {
+            let evidence = Self.validatedEvidence(point.evidence, against: entries, timelineOrigin: origin)
+            let rejected = point.evidence != nil && evidence == nil
+            if rejected { rejectedEvidenceCount += 1 }
+            return SummaryPoint(
+                text: point.text,
+                evidence: evidence,
+                confidence: rejected ? .low : point.confidence
+            )
+        }
+
+        func groundedAction(_ item: SummaryActionItem) -> SummaryActionItem {
+            let evidence = Self.validatedEvidence(item.evidence, against: entries, timelineOrigin: origin)
+            let rejected = item.evidence != nil && evidence == nil
+            if rejected { rejectedEvidenceCount += 1 }
+            return SummaryActionItem(
+                text: item.text,
+                owner: item.owner,
+                deadline: item.deadline,
+                explicitness: item.explicitness,
+                evidence: evidence,
+                confidence: rejected ? .low : item.confidence
+            )
+        }
+
+        let groundedTLDR = tldr.map(groundedPoint)
+        let groundedDecisions = decisions.map(groundedPoint)
+        let groundedActions = actionItems.map(groundedAction)
+        let groundedNextSteps = nextSteps.map(groundedPoint)
+        let groundedOpenQuestions = openQuestions.map(groundedPoint)
+        let groundedRisks = risks.map(groundedPoint)
+        let groundedSections = sections.map { section in
+            SummarySection(title: section.title, bullets: section.bullets.map(groundedPoint))
+        }
+        var warnings = sourceWarnings
+        if rejectedEvidenceCount > 0 {
+            warnings.append(
+                "Morrow Scribe removed \(rejectedEvidenceCount) model evidence citation(s) that could not be matched to the transcript."
+            )
+        }
+
+        return MeetingSummary(
+            schemaVersion: schemaVersion,
+            tldr: groundedTLDR,
+            decisions: groundedDecisions,
+            actionItems: groundedActions,
+            nextSteps: groundedNextSteps,
+            openQuestions: groundedOpenQuestions,
+            risks: groundedRisks,
+            sections: groundedSections,
+            sourceWarnings: warnings
+        )
+    }
+
     private static func appendPoints(_ out: inout String, title: String, points: [SummaryPoint]) {
         guard !points.isEmpty else { return }
         out += "## \(title)\n\n"
@@ -284,11 +346,52 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
         }
         return String(trimmed[first...last])
     }
+
+    private static func validatedEvidence(
+        _ evidence: SummaryEvidence?,
+        against entries: [TranscriptEntry],
+        timelineOrigin: Date
+    ) -> SummaryEvidence? {
+        guard let evidence, let quote = evidence.quote else { return nil }
+        let normalizedQuote = normalizeEvidenceText(quote)
+        guard !normalizedQuote.isEmpty else { return nil }
+
+        let matching = entries.filter { normalizeEvidenceText($0.text).contains(normalizedQuote) }
+        guard !matching.isEmpty else { return nil }
+
+        let selected: TranscriptEntry
+        if let requestedSpeaker = evidence.speaker,
+           let speakerMatch = matching.first(where: {
+               ($0.speaker ?? "").caseInsensitiveCompare(requestedSpeaker) == .orderedSame
+           }) {
+            selected = speakerMatch
+        } else if let requestedTimestamp = evidence.timestamp,
+                  let timestampMatch = matching.first(where: {
+                      MeetingSummaryPrompt.formatElapsed(max(0, $0.observedAt.timeIntervalSince(timelineOrigin))) == requestedTimestamp
+                  }) {
+            selected = timestampMatch
+        } else {
+            selected = matching[0]
+        }
+
+        return SummaryEvidence(
+            speaker: selected.speaker,
+            timestamp: MeetingSummaryPrompt.formatElapsed(max(0, selected.observedAt.timeIntervalSince(timelineOrigin))),
+            quote: quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private static func normalizeEvidenceText(_ text: String) -> String {
+        text
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 public enum MeetingSummaryPrompt {
-    public static func build(entries: [TranscriptEntry]) -> String {
-        let firstDate = entries.first?.observedAt ?? Date()
+    public static func build(entries: [TranscriptEntry], timelineOrigin: Date? = nil) -> String {
+        let firstDate = timelineOrigin ?? entries.first?.observedAt ?? Date()
         let transcript = entries.map { entry -> String in
             let elapsed = max(0, entry.observedAt.timeIntervalSince(firstDate))
             let timestamp = formatElapsed(elapsed)
@@ -349,7 +452,7 @@ public enum MeetingSummaryPrompt {
         """
     }
 
-    private static func formatElapsed(_ interval: TimeInterval) -> String {
+    static func formatElapsed(_ interval: TimeInterval) -> String {
         let total = max(0, Int(interval.rounded(.down)))
         let hours = total / 3600
         let minutes = (total % 3600) / 60

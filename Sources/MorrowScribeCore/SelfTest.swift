@@ -199,6 +199,35 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("structured summary")
 
+        let evidenceProbe = MeetingSummary(
+            tldr: [
+                SummaryPoint(
+                    text: "Ship Friday",
+                    evidence: SummaryEvidence(speaker: "Wrong Speaker", timestamp: "99:99", quote: "We will ship Friday."),
+                    confidence: .high
+                ),
+            ],
+            decisions: [
+                SummaryPoint(
+                    text: "Invented evidence must be rejected",
+                    evidence: SummaryEvidence(speaker: "Alice", timestamp: "00:00", quote: "This sentence never appeared."),
+                    confidence: .high
+                ),
+            ]
+        ).grounded(against: entries, timelineOrigin: summaryStart)
+        let chunks = SummaryClient.transcriptChunks(entries: entries, maxCharacters: 70)
+        guard evidenceProbe.tldr.first?.evidence?.speaker == "Alice",
+              evidenceProbe.tldr.first?.evidence?.timestamp == "00:00",
+              evidenceProbe.decisions.first?.evidence == nil,
+              evidenceProbe.decisions.first?.confidence == .low,
+              evidenceProbe.sourceWarnings.contains(where: { $0.contains("removed 1 model evidence") }),
+              chunks.count == 2,
+              MeetingSummaryPrompt.build(entries: chunks[1], timelineOrigin: summaryStart)
+                .contains("[01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
+            throw SelfTestError.failed("summary evidence grounding or chunk timeline failed")
+        }
+        passed.append("summary grounding and chunking")
+
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-scribe-self-test-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let store = try MeetingStore(title: "Self Test", baseDirectory: tmp)
