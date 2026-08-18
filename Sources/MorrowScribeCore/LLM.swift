@@ -42,6 +42,12 @@ public enum SummaryProvider: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+public enum SummaryDefaults {
+    public static let provider: SummaryProvider = .codexCLI
+    public static let codexModel = "gpt-5.6-luna"
+    public static let codexReasoningEffort = "xhigh"
+}
+
 public struct SummaryConfiguration: Hashable, Sendable {
     public var provider: SummaryProvider
     public var baseURL: String
@@ -52,13 +58,13 @@ public struct SummaryConfiguration: Hashable, Sendable {
     public var codexReasoningEffort: String
 
     public init(
-        provider: SummaryProvider = .openAICompatible,
+        provider: SummaryProvider = SummaryDefaults.provider,
         baseURL: String = "",
         model: String = "",
         apiKey: String = "",
         codexPath: String = "",
-        codexModel: String = "",
-        codexReasoningEffort: String = ""
+        codexModel: String = SummaryDefaults.codexModel,
+        codexReasoningEffort: String = SummaryDefaults.codexReasoningEffort
     ) {
         self.provider = provider
         self.baseURL = baseURL
@@ -98,8 +104,10 @@ public enum SummaryConfigurationStore {
         let storedModel = defaults.string(forKey: defaultsModelKey) ?? ""
         let storedKey = loadAPIKey() ?? ""
         let storedCodexPath = defaults.string(forKey: defaultsCodexPathKey) ?? ""
-        let storedCodexModel = defaults.string(forKey: defaultsCodexModelKey) ?? ""
-        let storedCodexReasoningEffort = defaults.string(forKey: defaultsCodexReasoningEffortKey) ?? ""
+        let storedCodexModel = normalizedCodexModel(defaults.string(forKey: defaultsCodexModelKey))
+        let storedCodexReasoningEffort = normalizedCodexReasoningEffort(
+            defaults.string(forKey: defaultsCodexReasoningEffortKey)
+        )
         let stored = SummaryConfiguration(
             provider: storedProvider,
             baseURL: storedBase,
@@ -129,8 +137,16 @@ public enum SummaryConfigurationStore {
         let env = ProcessInfo.processInfo.environment
         let provider: SummaryProvider
         switch (env["MORROW_SCRIBE_SUMMARY_PROVIDER"] ?? "").lowercased() {
-        case "codex", "codex-cli": provider = .codexCLI
-        default: provider = .openAICompatible
+        case "openai", "openai-compatible":
+            provider = .openAICompatible
+        case "codex", "codex-cli":
+            provider = .codexCLI
+        default:
+            let hasExplicitAPI = !(env["MORROW_SCRIBE_LLM_BASE_URL"] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                !(env["MORROW_SCRIBE_LLM_MODEL"] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            provider = hasExplicitAPI ? .openAICompatible : SummaryDefaults.provider
         }
         return SummaryConfiguration(
             provider: provider,
@@ -138,9 +154,21 @@ public enum SummaryConfigurationStore {
             model: env["MORROW_SCRIBE_LLM_MODEL"] ?? "",
             apiKey: env["MORROW_SCRIBE_LLM_API_KEY"] ?? "",
             codexPath: env["MORROW_SCRIBE_CODEX_PATH"] ?? "",
-            codexModel: env["MORROW_SCRIBE_CODEX_MODEL"] ?? "",
-            codexReasoningEffort: env["MORROW_SCRIBE_CODEX_REASONING_EFFORT"] ?? ""
+            codexModel: normalizedCodexModel(env["MORROW_SCRIBE_CODEX_MODEL"]),
+            codexReasoningEffort: normalizedCodexReasoningEffort(
+                env["MORROW_SCRIBE_CODEX_REASONING_EFFORT"]
+            )
         )
+    }
+
+    private static func normalizedCodexModel(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? SummaryDefaults.codexModel : trimmed
+    }
+
+    private static func normalizedCodexReasoningEffort(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? SummaryDefaults.codexReasoningEffort : trimmed
     }
 
     private static func loadAPIKey() -> String? {
@@ -216,17 +244,39 @@ public enum SummaryClient {
         var partials: [MeetingSummary] = []
         partials.reserveCapacity(chunks.count)
         for chunk in chunks {
-            let output = try await complete(
-                prompt: MeetingSummaryPrompt.build(entries: chunk, timelineOrigin: timelineOrigin),
+            let basePrompt = MeetingSummaryPrompt.build(entries: chunk, timelineOrigin: timelineOrigin)
+            var output = try await complete(
+                prompt: basePrompt,
                 configuration: config,
                 structuredOutput: true
             )
-            let partial = try MeetingSummary.decodeModelOutput(
+            var partial = try MeetingSummary.decodeModelOutput(
                 output,
                 entries: chunk,
                 timelineOrigin: timelineOrigin
             )
                 .grounded(against: chunk, timelineOrigin: timelineOrigin)
+
+            // Invalid evidence IDs are usually a transcription-reference typo, not a factual
+            // extraction failure. Retry exactly once with the previous atoms visible so the
+            // model can repair IDs without silently dropping content to avoid citation work.
+            if partial.hasInvalidEvidenceReferences {
+                output = try await complete(
+                    prompt: MeetingSummaryPrompt.repairEvidenceReferences(
+                        basePrompt: basePrompt,
+                        previousOutput: output,
+                        validEvidenceCount: chunk.count
+                    ),
+                    configuration: config,
+                    structuredOutput: true
+                )
+                partial = try MeetingSummary.decodeModelOutput(
+                    output,
+                    entries: chunk,
+                    timelineOrigin: timelineOrigin
+                )
+                    .grounded(against: chunk, timelineOrigin: timelineOrigin)
+            }
             if !partial.isEmpty { partials.append(partial) }
         }
 

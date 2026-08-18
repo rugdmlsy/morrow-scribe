@@ -690,13 +690,12 @@ private struct LLMSettingsView: View {
             } else {
                 Form {
                     TextField("Codex executable", text: $codexPath, prompt: Text("Auto-detect codex"))
-                    TextField("Model override", text: $codexModel, prompt: Text("Use Codex default"))
+                    TextField("Model", text: $codexModel, prompt: Text(SummaryDefaults.codexModel))
                     Picker("Reasoning effort", selection: $codexReasoningEffort) {
-                        Text("Default").tag("")
                         Text("Low").tag("low")
                         Text("Medium").tag("medium")
                         Text("High").tag("high")
-                        Text("xHigh").tag("xhigh")
+                        Text("xHigh (Default)").tag("xhigh")
                     }
                 }
                 .formStyle(.grouped)

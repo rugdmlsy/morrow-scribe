@@ -241,8 +241,19 @@ public enum MorrowScribeSelfTest {
               referenceSummary.actionItems.first?.evidence.first?.speaker == "Bob",
               referenceSummary.risks.first?.evidence.isEmpty == true,
               referenceSummary.risks.first?.confidence == .low,
+              referenceSummary.hasInvalidEvidenceReferences,
               referenceSummary.sourceWarnings.contains(where: { $0.contains("ignored 1 model evidence reference") }) else {
             throw SelfTestError.failed("summary evidence-reference resolution failed")
+        }
+        let repairPrompt = MeetingSummaryPrompt.repairEvidenceReferences(
+            basePrompt: "BASE",
+            previousOutput: "{\"evidenceRefs\":[\"E999\"]}",
+            validEvidenceCount: entries.count
+        )
+        guard repairPrompt.contains("Valid IDs are E1 through E2"),
+              repairPrompt.contains("Do NOT drop a decision, action, question, risk, or takeaway"),
+              repairPrompt.contains("E999") else {
+            throw SelfTestError.failed("summary evidence-reference repair prompt failed")
         }
         passed.append("summary evidence references")
 
@@ -321,6 +332,11 @@ public enum MorrowScribeSelfTest {
         )
         let codexConfiguration = SummaryConfiguration(provider: .codexCLI)
         guard apiConfiguration.isConfigured,
+              SummaryDefaults.provider == .codexCLI,
+              SummaryDefaults.codexModel == "gpt-5.6-luna",
+              SummaryDefaults.codexReasoningEffort == "xhigh",
+              codexConfiguration.codexModel == "gpt-5.6-luna",
+              codexConfiguration.codexReasoningEffort == "xhigh",
               SummaryProvider.allCases == [.openAICompatible, .codexCLI],
               CodexCLI.resolveExecutable(configuredPath: "/definitely/missing/codex") != "/definitely/missing/codex",
               codexConfiguration.isConfigured == (CodexCLI.resolveExecutable() != nil) else {

@@ -175,7 +175,7 @@ public enum CodexCLI {
           "required": ["text", "evidenceRefs", "confidence"],
           "properties": {
             "text": {"type": "string"},
-            "evidenceRefs": {"type": "array", "maxItems": 3, "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}},
+            "evidenceRefs": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
           }
         },
@@ -188,7 +188,7 @@ public enum CodexCLI {
             "owner": {"type": ["string", "null"]},
             "deadline": {"type": ["string", "null"]},
             "explicitness": {"type": "string", "enum": ["explicit", "inferred"]},
-            "evidenceRefs": {"type": "array", "maxItems": 3, "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}},
+            "evidenceRefs": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}},
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
           }
         },

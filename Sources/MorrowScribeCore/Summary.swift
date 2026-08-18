@@ -434,6 +434,10 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
             openQuestions.isEmpty && risks.isEmpty && sections.isEmpty
     }
 
+    public var hasInvalidEvidenceReferences: Bool {
+        sourceWarnings.contains { $0.contains("model evidence reference(s) that were not present") }
+    }
+
     public func grounded(
         against entries: [TranscriptEntry],
         timelineOrigin: Date? = nil
@@ -807,7 +811,7 @@ public enum MeetingSummaryPrompt {
         - Before returning JSON, scan the transcript once more for explicit first-person commitments such as “我会…”, “我来…”, “I will…”, or “I'll…”. Preserve every materially distinct commitment as an action item even when it has no deadline; do not drop a real commitment merely because it is lower priority than the main deliverable.
         - owner and deadline must be null unless directly supported by evidence for that action. Do not inherit a nearby deadline just because it appears in the same discussion. A deadline may be carried across turns only when an explicit referent clearly applies it to that same action/deliverable.
         - Preserve technical terms and proper nouns when the transcript supports them. Correct obvious caption errors only when context makes the correction unambiguous.
-        - Every transcript turn has an immutable evidence ID such as E14. Return evidenceRefs containing 0-3 of those exact IDs. Never copy or rewrite transcript quotes yourself; Morrow Scribe resolves IDs back to exact quotes after generation.
+        - Every transcript turn has an immutable evidence ID such as E14. Every factual atom must return 1-3 exact evidenceRefs from the transcript. Never copy or rewrite transcript quotes yourself; Morrow Scribe resolves IDs back to exact quotes after generation. Do not omit an otherwise important supported atom merely because choosing its evidence ID takes extra care.
         - Use multiple evidenceRefs whenever a claim combines facts from different turns or needs proposal + confirmation to establish a decision. The cited turns together must directly support the whole claim.
         - Use confidence="low" when captions are ambiguous, speaker attribution is uncertain, or the conclusion requires interpretation.
         - Avoid filler such as “the meeting discussed”, “various topics”, or generic restatements.
@@ -833,13 +837,13 @@ public enum MeetingSummaryPrompt {
           ],
           "decisions": [],
           "actionItems": [
-            {"text":"task","owner":null,"deadline":null,"explicitness":"explicit|inferred","evidenceRefs":[],"confidence":"high|medium|low"}
+            {"text":"task","owner":null,"deadline":null,"explicitness":"explicit|inferred","evidenceRefs":["E14"],"confidence":"high|medium|low"}
           ],
           "nextSteps": [],
           "openQuestions": [],
           "risks": [],
           "sections": [
-            {"title":"Topic-specific title","bullets":[{"text":"grounded note","evidenceRefs":[],"confidence":"high|medium|low"}]}
+            {"title":"Topic-specific title","bullets":[{"text":"grounded note","evidenceRefs":["E14"],"confidence":"high|medium|low"}]}
           ],
           "sourceWarnings": []
         }
@@ -847,6 +851,27 @@ public enum MeetingSummaryPrompt {
         Transcript:
         ---
         \(transcript)
+        ---
+        """
+    }
+
+    public static func repairEvidenceReferences(
+        basePrompt: String,
+        previousOutput: String,
+        validEvidenceCount: Int
+    ) -> String {
+        """
+        \(basePrompt)
+
+        IMPORTANT RETRY — EVIDENCE REFERENCES ONLY:
+        Your previous JSON used one or more evidenceRefs that do not exist in this transcript chunk.
+        Valid IDs are E1 through E\(max(1, validEvidenceCount)). Re-read the [E…] labels above and repair the references.
+        Preserve every supported factual atom from the previous response. Do NOT drop a decision, action, question, risk, or takeaway merely because its evidence ID was wrong. Change factual text only if the transcript itself requires a correction.
+        Every returned factual atom must cite at least one valid evidenceRef.
+
+        Previous response to repair:
+        ---
+        \(previousOutput)
         ---
         """
     }
