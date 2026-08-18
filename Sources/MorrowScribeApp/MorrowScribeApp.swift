@@ -218,10 +218,10 @@ final class ScribeViewModel: ObservableObject {
         do {
             try SummaryConfigurationStore.save(configuration)
             llmConfiguration = SummaryConfigurationStore.load()
-            statusText = llmConfigured ? "LLM settings saved" : "LLM configuration cleared"
+            statusText = llmConfigured ? "Summary settings saved" : "Summary provider is not configured"
             return true
         } catch {
-            errorText = "Could not save LLM settings: \(error)"
+            errorText = "Could not save summary settings: \(error)"
             return false
         }
     }
@@ -475,9 +475,9 @@ struct ContentView: View {
                 Button {
                     showLLMSettings = true
                 } label: {
-                    Label("Set Up LLM", systemImage: "sparkles")
+                    Label("Set Up Summary", systemImage: "sparkles")
                 }
-                .help("Configure an OpenAI-compatible endpoint and model.")
+                .help("Choose Codex CLI or an OpenAI-compatible API for meeting summaries.")
             }
             Button {
                 showLLMSettings = true
@@ -530,7 +530,7 @@ struct ContentView: View {
                 .disabled(!model.llmConfigured || model.isTranscribing)
                 .help(model.llmConfigured
                       ? "Generate summary.md automatically after transcription stops."
-                      : "Configure an LLM endpoint and model to enable automatic summaries.")
+                      : "Configure a summary provider to enable automatic summaries.")
 
             Text(model.statusText)
                 .font(.caption)
@@ -541,9 +541,12 @@ struct ContentView: View {
 }
 
 private struct LLMSettingsView: View {
+    @State private var provider: SummaryProvider
     @State private var baseURL: String
     @State private var model: String
     @State private var apiKey: String
+    @State private var codexPath: String
+    @State private var codexModel: String
     @State private var isTesting = false
     @State private var testResult: TestResult?
 
@@ -555,15 +558,25 @@ private struct LLMSettingsView: View {
         onSave: @escaping (SummaryConfiguration) -> Void,
         onCancel: @escaping () -> Void
     ) {
+        _provider = State(initialValue: initialConfiguration.provider)
         _baseURL = State(initialValue: initialConfiguration.baseURL)
         _model = State(initialValue: initialConfiguration.model)
         _apiKey = State(initialValue: initialConfiguration.apiKey)
+        _codexPath = State(initialValue: initialConfiguration.codexPath)
+        _codexModel = State(initialValue: initialConfiguration.codexModel)
         self.onSave = onSave
         self.onCancel = onCancel
     }
 
     private var configuration: SummaryConfiguration {
-        SummaryConfiguration(baseURL: baseURL, model: model, apiKey: apiKey)
+        SummaryConfiguration(
+            provider: provider,
+            baseURL: baseURL,
+            model: model,
+            apiKey: apiKey,
+            codexPath: codexPath,
+            codexModel: codexModel
+        )
     }
 
     private enum TestResult {
@@ -574,32 +587,57 @@ private struct LLMSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("LLM Summary")
+                Text("Summary Provider")
                     .font(.title2.weight(.semibold))
-                Text("Use any OpenAI-compatible chat-completions endpoint. The API key is stored in macOS Keychain.")
+                Text(providerDescription)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
-            Form {
-                TextField("Base URL", text: $baseURL, prompt: Text("https://…/v1"))
-                    .textContentType(.URL)
-                TextField("Model", text: $model, prompt: Text("model name"))
-                SecureField("API Key", text: $apiKey, prompt: Text("optional for local endpoints"))
-            }
-            .formStyle(.grouped)
-
-            HStack(spacing: 8) {
-                Button("Use Ollama") {
-                    baseURL = "http://127.0.0.1:11434/v1"
-                    testResult = nil
+            Picker("Provider", selection: $provider) {
+                ForEach(SummaryProvider.allCases, id: \.self) { provider in
+                    Text(provider.displayName).tag(provider)
                 }
-                .buttonStyle(.bordered)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: provider) { _, _ in testResult = nil }
 
-                Text("Only the endpoint is filled; choose the local model you installed.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
+            if provider == .openAICompatible {
+                Form {
+                    TextField("Base URL", text: $baseURL, prompt: Text("https://…/v1"))
+                        .textContentType(.URL)
+                    TextField("Model", text: $model, prompt: Text("model name"))
+                    SecureField("API Key", text: $apiKey, prompt: Text("optional for local endpoints"))
+                }
+                .formStyle(.grouped)
+
+                HStack(spacing: 8) {
+                    Button("Use Ollama") {
+                        baseURL = "http://127.0.0.1:11434/v1"
+                        testResult = nil
+                    }
+                    .buttonStyle(.bordered)
+
+                    Text("Only the endpoint is filled; choose the local model you installed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            } else {
+                Form {
+                    TextField("Codex executable", text: $codexPath, prompt: Text("Auto-detect codex"))
+                    TextField("Model override", text: $codexModel, prompt: Text("Use Codex default"))
+                }
+                .formStyle(.grouped)
+
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: configuration.isConfigured ? "checkmark.circle" : "exclamationmark.triangle")
+                    Text(codexDetectionText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Spacer()
+                }
             }
 
             HStack(spacing: 10) {
@@ -637,7 +675,23 @@ private struct LLMSettingsView: View {
             }
         }
         .padding(24)
-        .frame(width: 540)
+        .frame(width: 580)
+    }
+
+    private var providerDescription: String {
+        switch provider {
+        case .openAICompatible:
+            return "Use any OpenAI-compatible chat-completions endpoint. The API key is stored in macOS Keychain."
+        case .codexCLI:
+            return "Use your existing Codex CLI login instead of an API key. Scribe runs an isolated, non-interactive codex exec session for each summary pass."
+        }
+    }
+
+    private var codexDetectionText: String {
+        if let path = CodexCLI.resolveExecutable(configuredPath: codexPath) {
+            return "Codex detected at \(path). User config, plugins, project rules, and session persistence are disabled for summaries."
+        }
+        return "Codex CLI was not found. Enter its executable path or install Codex first."
     }
 
     private func testConnection() {
@@ -734,7 +788,7 @@ private struct SummaryDetailView: View {
             ContentUnavailableView(
                 "No summary yet",
                 systemImage: "sparkles",
-                description: Text("Configure an LLM and generate a grounded summary from this transcript.")
+                description: Text("Configure Codex CLI or an API provider and generate a grounded summary from this transcript.")
             )
         }
     }

@@ -228,6 +228,20 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("summary grounding and chunking")
 
+        let apiConfiguration = SummaryConfiguration(
+            provider: .openAICompatible,
+            baseURL: "http://127.0.0.1:11434/v1",
+            model: "test-model"
+        )
+        let codexConfiguration = SummaryConfiguration(provider: .codexCLI)
+        guard apiConfiguration.isConfigured,
+              SummaryProvider.allCases == [.openAICompatible, .codexCLI],
+              CodexCLI.resolveExecutable(configuredPath: "/definitely/missing/codex") != "/definitely/missing/codex",
+              codexConfiguration.isConfigured == (CodexCLI.resolveExecutable() != nil) else {
+            throw SelfTestError.failed("summary provider configuration failed")
+        }
+        passed.append("summary providers")
+
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-scribe-self-test-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let store = try MeetingStore(title: "Self Test", baseDirectory: tmp)

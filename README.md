@@ -2,7 +2,7 @@
 
 Slack-native meeting transcription and summarization for macOS.
 
-The first backend reads Slack Huddle live captions through macOS Accessibility instead of recording audio. Slack remains responsible for ASR and speaker attribution; Morrow Scribe persists a structured transcript and can send it to any OpenAI-compatible summarizer.
+The first transcription backend reads Slack Huddle live captions through macOS Accessibility instead of recording audio. Slack remains responsible for ASR and speaker attribution; Morrow Scribe persists a structured transcript and can summarize it through the local Codex CLI or an OpenAI-compatible API.
 
 For Slack, the collector prefers the persistent **side-by-side captions** transcript. If that surface is unavailable, it falls back to the transient overlay/hidden captions.
 
@@ -18,7 +18,7 @@ Slack Huddle
   -> macOS Accessibility
   -> Morrow Scribe collector
   -> meeting.json + transcript.jsonl + transcript.md + ax-events.jsonl
-  -> optional OpenAI-compatible summary
+  -> optional Codex CLI / OpenAI-compatible summary
 ```
 
 The collector briefly foregrounds Slack once at startup to obtain a stable `AXWindow` reference, immediately restores the previously focused app, and then polls that retained window in the background. It does not use OCR or screen capture.
@@ -67,16 +67,21 @@ The GUI provides:
 - Right-click meeting menu for Rename and Delete (with deletion confirmation)
 - Transcript and summary content views
 - Reveal a meeting directory in Finder
-- Manual `Generate Summary` and `Auto summary` controls when an OpenAI-compatible LLM is configured
-- In-app LLM settings for endpoint/model, including a lightweight connection test; API keys are stored in macOS Keychain
+- Manual `Generate Summary` and `Auto summary` controls with either Codex CLI or an OpenAI-compatible API
+- In-app summary-provider settings with a lightweight connection test; API keys are stored in macOS Keychain
 - `Auto summary` preference persists across app launches
 - Structured summary preview with decisions, action items, next steps, open questions, risks, topic notes, evidence, and confidence
 
 Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**. The app bundle is signed with a stable designated requirement (`identifier "com.morrow.scribe"`) so rebuilding/updating the local app no longer invalidates the Accessibility grant. If upgrading from a build created before this fix, remove the old Accessibility entry and add `~/Applications/Morrow Scribe.app` once to replace the stale CDHash-based grant.
 
-## Summary provider
+## Summary providers
 
-The macOS app can configure the summary provider directly from **Summary Settings**. Enter any OpenAI-compatible base URL and model; API keys are stored in macOS Keychain rather than plaintext preferences.
+The macOS app can configure the summary provider directly from **Summary Settings**. Two backends are supported:
+
+- **Codex CLI** — reuses the existing local `codex` login and does not require a separate API key. Scribe auto-detects common install paths such as `~/.local/bin/codex`; an explicit executable path and model override are optional.
+- **OpenAI-compatible API** — accepts a base URL, model, and optional API key. API keys are stored in macOS Keychain rather than plaintext preferences.
+
+Codex summaries run through `codex exec` in an empty temporary working directory with `--ephemeral`, a read-only sandbox, approvals disabled, and user config/project rules ignored. This keeps the summary run isolated from unrelated Codex plugins, memory, project instructions, and session history while still reusing the existing Codex authentication.
 
 The CLI keeps the environment-variable path:
 
@@ -87,6 +92,16 @@ export MORROW_SCRIBE_LLM_BASE_URL=http://127.0.0.1:11434/v1
 export MORROW_SCRIBE_LLM_MODEL=<model>
 # optional when the endpoint requires it:
 export MORROW_SCRIBE_LLM_API_KEY=<secret>
+```
+
+For Codex CLI instead:
+
+```bash
+export MORROW_SCRIBE_SUMMARY_PROVIDER=codex
+# optional; Scribe auto-detects codex when omitted:
+export MORROW_SCRIBE_CODEX_PATH="$HOME/.local/bin/codex"
+# optional; otherwise Codex uses its default model:
+export MORROW_SCRIBE_CODEX_MODEL=<model>
 ```
 
 The summarizer first requests grounded structured JSON and persists both `summary.json` and a portable `summary.md`. The prompt explicitly distinguishes decisions from discussion, requires owners/deadlines to be transcript-supported, prefers empty fields over guesses, and can attach speaker/timestamp/quote evidence plus confidence to important items.

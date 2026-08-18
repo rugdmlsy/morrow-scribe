@@ -6,67 +6,132 @@ public enum SummaryError: Error, CustomStringConvertible {
     case invalidResponse
     case invalidStructuredResponse(String)
     case http(Int, String)
+    case codexUnavailable
+    case codexFailed(Int32, String)
+    case codexTimedOut
 
     public var description: String {
         switch self {
         case .missingConfiguration:
-            return "configure an OpenAI-compatible LLM endpoint and model in Morrow Scribe"
+            return "configure Codex CLI or an OpenAI-compatible summary provider in Morrow Scribe"
         case .invalidResponse:
             return "invalid OpenAI-compatible chat-completions response"
         case let .invalidStructuredResponse(reason):
             return "LLM returned an invalid structured meeting summary: \(reason)"
         case let .http(code, body):
             return "LLM endpoint returned HTTP \(code): \(body.prefix(300))"
+        case .codexUnavailable:
+            return "Codex CLI was not found. Install Codex or set its executable path in Summary Settings."
+        case let .codexFailed(code, output):
+            return "Codex CLI exited with status \(code): \(output.prefix(500))"
+        case .codexTimedOut:
+            return "Codex CLI summary timed out"
+        }
+    }
+}
+
+public enum SummaryProvider: String, CaseIterable, Hashable, Sendable {
+    case openAICompatible = "openai-compatible"
+    case codexCLI = "codex-cli"
+
+    public var displayName: String {
+        switch self {
+        case .openAICompatible: return "OpenAI-compatible API"
+        case .codexCLI: return "Codex CLI"
         }
     }
 }
 
 public struct SummaryConfiguration: Hashable, Sendable {
+    public var provider: SummaryProvider
     public var baseURL: String
     public var model: String
     public var apiKey: String
+    public var codexPath: String
+    public var codexModel: String
 
-    public init(baseURL: String = "", model: String = "", apiKey: String = "") {
+    public init(
+        provider: SummaryProvider = .openAICompatible,
+        baseURL: String = "",
+        model: String = "",
+        apiKey: String = "",
+        codexPath: String = "",
+        codexModel: String = ""
+    ) {
+        self.provider = provider
         self.baseURL = baseURL
         self.model = model
         self.apiKey = apiKey
+        self.codexPath = codexPath
+        self.codexModel = codexModel
     }
 
     public var isConfigured: Bool {
-        !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        switch provider {
+        case .openAICompatible:
+            return !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .codexCLI:
+            return CodexCLI.resolveExecutable(configuredPath: codexPath) != nil
+        }
     }
 }
 
 public enum SummaryConfigurationStore {
+    private static let defaultsProviderKey = "llm.provider"
     private static let defaultsBaseURLKey = "llm.baseURL"
     private static let defaultsModelKey = "llm.model"
+    private static let defaultsCodexPathKey = "llm.codexPath"
+    private static let defaultsCodexModelKey = "llm.codexModel"
     private static let keychainService = "com.morrow.scribe.llm"
     private static let keychainAccount = "api-key"
 
     public static func load() -> SummaryConfiguration {
         let defaults = UserDefaults.standard
+        let storedProviderRaw = defaults.string(forKey: defaultsProviderKey)
+        let storedProvider = storedProviderRaw.flatMap(SummaryProvider.init(rawValue:)) ?? .openAICompatible
         let storedBase = defaults.string(forKey: defaultsBaseURLKey) ?? ""
         let storedModel = defaults.string(forKey: defaultsModelKey) ?? ""
         let storedKey = loadAPIKey() ?? ""
-        let stored = SummaryConfiguration(baseURL: storedBase, model: storedModel, apiKey: storedKey)
+        let storedCodexPath = defaults.string(forKey: defaultsCodexPathKey) ?? ""
+        let storedCodexModel = defaults.string(forKey: defaultsCodexModelKey) ?? ""
+        let stored = SummaryConfiguration(
+            provider: storedProvider,
+            baseURL: storedBase,
+            model: storedModel,
+            apiKey: storedKey,
+            codexPath: storedCodexPath,
+            codexModel: storedCodexModel
+        )
+        if storedProviderRaw != nil { return stored }
         if stored.isConfigured { return stored }
         return environmentConfiguration()
     }
 
     public static func save(_ configuration: SummaryConfiguration) throws {
         let defaults = UserDefaults.standard
+        defaults.set(configuration.provider.rawValue, forKey: defaultsProviderKey)
         defaults.set(configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsBaseURLKey)
         defaults.set(configuration.model.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsModelKey)
+        defaults.set(configuration.codexPath.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsCodexPathKey)
+        defaults.set(configuration.codexModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: defaultsCodexModelKey)
         try saveAPIKey(configuration.apiKey)
     }
 
     public static func environmentConfiguration() -> SummaryConfiguration {
         let env = ProcessInfo.processInfo.environment
+        let provider: SummaryProvider
+        switch (env["MORROW_SCRIBE_SUMMARY_PROVIDER"] ?? "").lowercased() {
+        case "codex", "codex-cli": provider = .codexCLI
+        default: provider = .openAICompatible
+        }
         return SummaryConfiguration(
+            provider: provider,
             baseURL: env["MORROW_SCRIBE_LLM_BASE_URL"] ?? "",
             model: env["MORROW_SCRIBE_LLM_MODEL"] ?? "",
-            apiKey: env["MORROW_SCRIBE_LLM_API_KEY"] ?? ""
+            apiKey: env["MORROW_SCRIBE_LLM_API_KEY"] ?? "",
+            codexPath: env["MORROW_SCRIBE_CODEX_PATH"] ?? "",
+            codexModel: env["MORROW_SCRIBE_CODEX_MODEL"] ?? ""
         )
     }
 
@@ -123,7 +188,8 @@ public enum SummaryClient {
         let marker = "MORROW_SCRIBE_OK"
         let output = try await complete(
             prompt: "Connection test. Reply with exactly \(marker) and nothing else.",
-            configuration: configuration
+            configuration: configuration,
+            structuredOutput: false
         )
         guard output.contains(marker) else {
             throw SummaryError.invalidResponse
@@ -145,7 +211,8 @@ public enum SummaryClient {
         for chunk in chunks {
             let output = try await complete(
                 prompt: MeetingSummaryPrompt.build(entries: chunk, timelineOrigin: timelineOrigin),
-                configuration: config
+                configuration: config,
+                structuredOutput: true
             )
             let partial = try MeetingSummary.decodeModelOutput(output)
                 .grounded(against: chunk, timelineOrigin: timelineOrigin)
@@ -175,11 +242,34 @@ public enum SummaryClient {
     }
 
     public static func summarize(prompt: String) async throws -> String {
-        try await complete(prompt: prompt, configuration: SummaryConfigurationStore.load())
+        try await complete(prompt: prompt, configuration: SummaryConfigurationStore.load(), structuredOutput: false)
     }
 
-    public static func complete(prompt: String, configuration: SummaryConfiguration) async throws -> String {
+    public static func complete(
+        prompt: String,
+        configuration: SummaryConfiguration,
+        structuredOutput: Bool = false
+    ) async throws -> String {
         guard configuration.isConfigured else { throw SummaryError.missingConfiguration }
+
+        switch configuration.provider {
+        case .codexCLI:
+            return try await Task.detached(priority: .userInitiated) {
+                try CodexCLI.complete(
+                    prompt: prompt,
+                    configuration: configuration,
+                    structuredOutput: structuredOutput
+                )
+            }.value
+        case .openAICompatible:
+            return try await completeOpenAICompatible(prompt: prompt, configuration: configuration)
+        }
+    }
+
+    private static func completeOpenAICompatible(
+        prompt: String,
+        configuration: SummaryConfiguration
+    ) async throws -> String {
 
         let base = configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -265,7 +355,8 @@ public enum SummaryClient {
                 } else {
                     let output = try await complete(
                         prompt: try mergePrompt(summaries: batch),
-                        configuration: configuration
+                        configuration: configuration,
+                        structuredOutput: true
                     )
                     let merged = try MeetingSummary.decodeModelOutput(output)
                         .grounded(against: entries, timelineOrigin: timelineOrigin)
