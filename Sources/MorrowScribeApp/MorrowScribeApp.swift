@@ -48,6 +48,7 @@ final class ScribeViewModel: ObservableObject {
     private var collectorControl: CollectorControl?
     private var recordingStatus: RecordingStatus?
     private var activeMeetingDirectory: URL?
+    private var summaryTask: Task<Void, Never>?
 
     enum DetailTab: String, CaseIterable, Identifiable {
         case transcript = "Transcript"
@@ -180,7 +181,7 @@ final class ScribeViewModel: ObservableObject {
                 }
                 self.refreshLibraryKeepingSelection()
                 if autoSummary, self.llmConfigured, let finishedDirectory {
-                    await self.summarize(directory: finishedDirectory)
+                    self.startSummary(directory: finishedDirectory)
                 }
             }
         } catch {
@@ -239,9 +240,14 @@ final class ScribeViewModel: ObservableObject {
         }
     }
 
-    func summarizeSelected() {
-        guard let directory = selectedMeeting?.directory else { return }
-        Task { await summarize(directory: directory) }
+    func summarize(_ meeting: SavedMeeting) {
+        startSummary(directory: meeting.directory)
+    }
+
+    func cancelSummary() {
+        guard let summaryTask else { return }
+        statusText = "Stopping summary…"
+        summaryTask.cancel()
     }
 
     func saveLLMConfiguration(_ configuration: SummaryConfiguration) -> Bool {
@@ -256,25 +262,39 @@ final class ScribeViewModel: ObservableObject {
         }
     }
 
-    private func summarize(directory: URL) async {
-        guard !isSummarizing else { return }
+    private func startSummary(directory: URL) {
+        guard summaryTask == nil else { return }
         isSummarizing = true
         errorText = nil
         statusText = "Generating summary…"
-        defer { isSummarizing = false }
+        let configuration = llmConfiguration
+        summaryTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runSummary(directory: directory, configuration: configuration)
+            self.summaryTask = nil
+            self.isSummarizing = false
+        }
+    }
+
+    private func runSummary(directory: URL, configuration: SummaryConfiguration) async {
         do {
+            try Task.checkCancellation()
             let entries = try MeetingExport.transcriptEntries(in: directory)
             guard !entries.isEmpty else {
                 errorText = "This meeting has no transcript yet."
                 statusText = "No transcript to summarize"
                 return
             }
-            let summary = try await SummaryClient.summarize(entries: entries, configuration: llmConfiguration)
+            let summary = try await SummaryClient.summarize(entries: entries, configuration: configuration)
+            try Task.checkCancellation()
             try MeetingExport.writeSummary(summary, to: directory)
             statusText = "Summary saved"
             refreshLibraryKeepingSelection()
             selectedMeetingID = directory.path
             detailTab = .summary
+        } catch is CancellationError {
+            errorText = nil
+            statusText = "Summary stopped"
         } catch {
             errorText = String(describing: error)
             statusText = "Summary failed"
@@ -289,6 +309,8 @@ struct ContentView: View {
     @State private var deleteMeetingID: String?
     @State private var showRenameSheet = false
     @State private var showDeleteConfirmation = false
+    @State private var showRegenerateSummaryConfirmation = false
+    @State private var regenerateMeetingID: String?
     @State private var showLLMSettings = false
     @State private var markdownPreviewEnabled = false
     @State private var summaryPresentationMode: SummaryPresentationMode = .concise
@@ -339,6 +361,23 @@ struct ContentView: View {
             }
         } message: {
             Text("This permanently removes the meeting directory, transcript, summary, and diagnostic files.")
+        }
+        .confirmationDialog(
+            "Replace existing summary?",
+            isPresented: $showRegenerateSummaryConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Regenerate Summary", role: .destructive) {
+                if let meeting = meeting(withID: regenerateMeetingID) {
+                    model.summarize(meeting)
+                }
+                regenerateMeetingID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                regenerateMeetingID = nil
+            }
+        } message: {
+            Text("This meeting already has a summary. Regenerating will replace the existing summary files.")
         }
     }
 
@@ -476,6 +515,16 @@ struct ContentView: View {
         return model.meetings.first { $0.id == id }
     }
 
+    private func requestSummaryGeneration(for meeting: SavedMeeting) {
+        let hasSummary = meeting.structuredSummary != nil || !(meeting.summary ?? "").isEmpty
+        if hasSummary {
+            regenerateMeetingID = meeting.id
+            showRegenerateSummaryConfirmation = true
+        } else {
+            model.summarize(meeting)
+        }
+    }
+
     private var renameSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Rename Meeting")
@@ -526,13 +575,20 @@ struct ContentView: View {
                     .textSelection(.enabled)
             }
             Spacer()
-            if model.llmConfigured {
-                Button {
-                    model.summarizeSelected()
+            if model.isSummarizing {
+                Button(role: .destructive) {
+                    model.cancelSummary()
                 } label: {
-                    Label(model.isSummarizing ? "Summarizing…" : "Generate Summary", systemImage: "sparkles")
+                    Label("Stop Summary", systemImage: "stop.fill")
                 }
-                .disabled(model.isSummarizing || meeting.transcript.isEmpty)
+                .help("Stop the summary generation currently in progress.")
+            } else if model.llmConfigured {
+                Button {
+                    requestSummaryGeneration(for: meeting)
+                } label: {
+                    Label("Generate Summary", systemImage: "sparkles")
+                }
+                .disabled(meeting.transcript.isEmpty)
             } else {
                 Button {
                     showLLMSettings = true

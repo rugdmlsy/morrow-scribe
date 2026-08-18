@@ -244,6 +244,7 @@ public enum SummaryClient {
         var partials: [MeetingSummary] = []
         partials.reserveCapacity(chunks.count)
         for chunk in chunks {
+            try Task.checkCancellation()
             let basePrompt = MeetingSummaryPrompt.build(entries: chunk, timelineOrigin: timelineOrigin)
             var output = try await complete(
                 prompt: basePrompt,
@@ -261,6 +262,7 @@ public enum SummaryClient {
             // extraction failure. Retry exactly once with the previous atoms visible so the
             // model can repair IDs without silently dropping content to avoid citation work.
             if partial.hasInvalidEvidenceReferences {
+                try Task.checkCancellation()
                 output = try await complete(
                     prompt: MeetingSummaryPrompt.repairEvidenceReferences(
                         basePrompt: basePrompt,
@@ -296,12 +298,19 @@ public enum SummaryClient {
         // A single extraction already saw the complete transcript and can write a coherent
         // TL;DR directly. Reserve the extra polish call for true multi-chunk meetings, where
         // the deterministic reducer intentionally does not synthesize new prose.
+        try Task.checkCancellation()
         guard partials.count > 1 else { return grounded }
 
         // Readability polish is deliberately narrow and non-critical. It can rewrite only
         // the TL;DR, must cite immutable source atom IDs, passes a no-new-fact-token gate, and
         // falls back to the deterministic summary on any provider/validation failure.
-        return (try? await polishTLDR(grounded, configuration: config)) ?? grounded
+        do {
+            return try await polishTLDR(grounded, configuration: config)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return grounded
+        }
     }
 
     public static func summarize(prompt: String) async throws -> String {
@@ -317,13 +326,18 @@ public enum SummaryClient {
 
         switch configuration.provider {
         case .codexCLI:
-            return try await Task.detached(priority: .userInitiated) {
-                try CodexCLI.complete(
+            let task = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                return try CodexCLI.complete(
                     prompt: prompt,
                     configuration: configuration,
                     structuredOutput: structuredOutput
                 )
-            }.value
+            }
+            return try await withTaskCancellationHandler(
+                operation: { try await task.value },
+                onCancel: { task.cancel() }
+            )
         case .openAICompatible:
             return try await completeOpenAICompatible(prompt: prompt, configuration: configuration)
         }

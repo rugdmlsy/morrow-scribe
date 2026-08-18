@@ -42,6 +42,7 @@ public enum CodexCLI {
         configuration: SummaryConfiguration,
         structuredOutput: Bool
     ) throws -> String {
+        try Task.checkCancellation()
         guard let executable = resolveExecutable(configuredPath: configuration.codexPath) else {
             throw SummaryError.codexUnavailable
         }
@@ -116,16 +117,18 @@ public enum CodexCLI {
 
         let deadline = Date().addingTimeInterval(structuredOutput ? structuredTimeout : unstructuredTimeout)
         while process.isRunning, Date() < deadline {
+            if Task.isCancelled {
+                terminate(process)
+                throw CancellationError()
+            }
             Thread.sleep(forTimeInterval: 0.05)
         }
         if process.isRunning {
-            process.terminate()
-            Thread.sleep(forTimeInterval: 0.25)
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
+            terminate(process)
             throw SummaryError.codexTimedOut
         }
+
+        try Task.checkCancellation()
 
         try? stdout.synchronize()
         try? stderr.synchronize()
@@ -143,6 +146,15 @@ public enum CodexCLI {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else { throw SummaryError.invalidResponse }
         return output
+    }
+
+    private static func terminate(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        Thread.sleep(forTimeInterval: 0.25)
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     private static func executableCandidates(named name: String) -> [String] {
