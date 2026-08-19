@@ -207,6 +207,26 @@ public enum MorrowScribeSelfTest {
         }
         passed.append("structured summary")
 
+        let chineseSummary = try SummaryTranslator.applying(
+            [
+                "T1": "周五发布",
+                "D1": "周五是发布目标",
+                "A1": "更新原型",
+                "AD1": "明天",
+            ],
+            to: structuredSummary
+        )
+        guard chineseSummary.tldr.first?.text == "周五发布",
+              chineseSummary.actionItems.first?.text == "更新原型",
+              chineseSummary.actionItems.first?.deadline == "明天",
+              chineseSummary.actionItems.first?.owner == "Bob",
+              chineseSummary.actionItems.first?.evidence == structuredSummary.actionItems.first?.evidence,
+              chineseSummary.markdown(mode: .detailed, language: .simplifiedChinese).contains("## 行动项"),
+              chineseSummary.markdown(mode: .detailed, language: .simplifiedChinese).contains("负责人: Bob; 截止时间: 明天") else {
+            throw SelfTestError.failed("structured summary translation failed")
+        }
+        passed.append("summary translation")
+
         let multiEvidenceSummary = try MeetingSummary.decodeModelOutput(
             """
             {
@@ -351,6 +371,7 @@ public enum MorrowScribeSelfTest {
         try store.appendTranscript(TranscriptEntry(sequence: 1, speaker: "Alice", text: "hello", confidence: 1))
         try store.finish()
         try MeetingExport.writeSummary(structuredSummary, to: store.directory)
+        try MeetingExport.writeChineseSummary(chineseSummary, to: store.directory)
         let roundTrip = try MeetingExport.transcriptEntries(in: store.directory)
         guard roundTrip.count == 1, roundTrip[0].speaker == "Alice", roundTrip[0].text == "hello" else {
             throw SelfTestError.failed("meeting store round-trip failed")
@@ -362,10 +383,19 @@ public enum MorrowScribeSelfTest {
               library[0].metadata.title == "Self Test",
               library[0].transcript.contains("Alice"),
               library[0].structuredSummary?.decisions.count == 1,
+              library[0].chineseSummary?.actionItems.first?.text == "更新原型",
               library[0].summary?.contains("## Action Items") == true else {
             throw SelfTestError.failed("meeting library failed to load saved meeting")
         }
         passed.append("meeting library")
+
+        try MeetingExport.writeSummary(structuredSummary, to: library[0].directory)
+        guard let invalidatedTranslation = try MeetingLibrary.loadMeeting(at: library[0].directory),
+              invalidatedTranslation.chineseSummary == nil,
+              !FileManager.default.fileExists(atPath: library[0].directory.appendingPathComponent("summary.zh.md").path) else {
+            throw SelfTestError.failed("regenerated summary did not invalidate saved translation")
+        }
+        passed.append("summary translation invalidation")
 
         let originalDirectory = library[0].directory
         let renamedDirectory = try MeetingLibrary.renameMeeting(at: originalDirectory, to: "Renamed Meeting")

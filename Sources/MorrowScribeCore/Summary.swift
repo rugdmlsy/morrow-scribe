@@ -199,6 +199,12 @@ public enum SummaryPresentationMode: String, CaseIterable, Hashable, Sendable, I
     public var id: String { rawValue }
 }
 
+public enum SummaryLanguage: String, CaseIterable, Hashable, Sendable, Identifiable {
+    case english = "English"
+    case simplifiedChinese = "中文"
+    public var id: String { rawValue }
+}
+
 public struct MeetingSummary: Codable, Hashable, Sendable {
     public let schemaVersion: Int
     public let tldr: [SummaryPoint]
@@ -388,40 +394,44 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
     public var markdown: String { markdown(mode: .detailed) }
     public var conciseMarkdown: String { markdown(mode: .concise) }
 
-    public func markdown(mode: SummaryPresentationMode) -> String {
-        var out = "# Meeting Summary\n\n"
+    public func markdown(
+        mode: SummaryPresentationMode,
+        language: SummaryLanguage = .english
+    ) -> String {
+        let labels = MarkdownLabels(language: language)
+        var out = "# \(labels.title)\n\n"
         let includeEvidence = mode == .detailed
-        Self.appendPoints(&out, title: "TL;DR", points: tldr, includeEvidence: includeEvidence)
-        Self.appendPoints(&out, title: "Decisions", points: decisions, includeEvidence: includeEvidence)
+        Self.appendPoints(&out, title: labels.tldr, points: tldr, includeEvidence: includeEvidence, language: language)
+        Self.appendPoints(&out, title: labels.decisions, points: decisions, includeEvidence: includeEvidence, language: language)
 
         if !actionItems.isEmpty {
-            out += "## Action Items\n\n"
+            out += "## \(labels.actionItems)\n\n"
             for item in actionItems {
                 var suffix: [String] = []
-                if let owner = item.owner { suffix.append("Owner: \(owner)") }
-                if let deadline = item.deadline { suffix.append("Deadline: \(deadline)") }
-                if item.explicitness == .inferred { suffix.append("inferred") }
+                if let owner = item.owner { suffix.append("\(labels.owner): \(owner)") }
+                if let deadline = item.deadline { suffix.append("\(labels.deadline): \(deadline)") }
+                if item.explicitness == .inferred { suffix.append(labels.inferred) }
                 let metadata = suffix.isEmpty ? "" : " — \(suffix.joined(separator: "; "))"
                 out += "- [ ] \(item.text)\(metadata)\n"
                 if includeEvidence {
-                    Self.appendEvidence(&out, evidence: item.evidence, confidence: item.confidence)
+                    Self.appendEvidence(&out, evidence: item.evidence, confidence: item.confidence, language: language)
                 }
             }
             out += "\n"
         }
 
-        Self.appendPoints(&out, title: "Open Questions", points: openQuestions, includeEvidence: includeEvidence)
+        Self.appendPoints(&out, title: labels.openQuestions, points: openQuestions, includeEvidence: includeEvidence, language: language)
 
         if mode == .detailed {
-            Self.appendPoints(&out, title: "Next Steps", points: nextSteps, includeEvidence: true)
-            Self.appendPoints(&out, title: "Risks / Blockers", points: risks, includeEvidence: true)
+            Self.appendPoints(&out, title: labels.nextSteps, points: nextSteps, includeEvidence: true, language: language)
+            Self.appendPoints(&out, title: labels.risks, points: risks, includeEvidence: true, language: language)
 
             for section in sections {
-                Self.appendPoints(&out, title: section.title, points: section.bullets, includeEvidence: true)
+                Self.appendPoints(&out, title: section.title, points: section.bullets, includeEvidence: true, language: language)
             }
 
             if !sourceWarnings.isEmpty {
-                out += "## Source Quality\n\n"
+                out += "## \(labels.sourceQuality)\n\n"
                 for warning in sourceWarnings { out += "- \(warning)\n" }
                 out += "\n"
             }
@@ -515,14 +525,15 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
         _ out: inout String,
         title: String,
         points: [SummaryPoint],
-        includeEvidence: Bool
+        includeEvidence: Bool,
+        language: SummaryLanguage
     ) {
         guard !points.isEmpty else { return }
         out += "## \(title)\n\n"
         for point in points {
             out += "- \(point.text)\n"
             if includeEvidence {
-                appendEvidence(&out, evidence: point.evidence, confidence: point.confidence)
+                appendEvidence(&out, evidence: point.evidence, confidence: point.confidence, language: language)
             }
         }
         out += "\n"
@@ -531,22 +542,85 @@ public struct MeetingSummary: Codable, Hashable, Sendable {
     private static func appendEvidence(
         _ out: inout String,
         evidence: [SummaryEvidence],
-        confidence: SummaryConfidence
+        confidence: SummaryConfidence,
+        language: SummaryLanguage
     ) {
+        let labels = MarkdownLabels(language: language)
         if evidence.isEmpty, confidence != .high {
-            out += "  - \(confidence.rawValue.capitalized) confidence\n"
+            out += "  - \(labels.confidence(confidence))\n"
             return
         }
         for item in evidence {
             var metadata: [String] = []
             if let timestamp = item.timestamp { metadata.append(timestamp) }
             if let speaker = item.speaker { metadata.append(speaker) }
-            if confidence != .high { metadata.append("\(confidence.rawValue) confidence") }
+            if confidence != .high { metadata.append(labels.confidence(confidence)) }
             if let quote = item.quote {
                 let prefix = metadata.isEmpty ? "" : "\(metadata.joined(separator: " · ")) — "
-                out += "  - Evidence: \(prefix)“\(quote)”\n"
+                out += "  - \(labels.evidence): \(prefix)“\(quote)”\n"
             } else if !metadata.isEmpty {
-                out += "  - Evidence: \(metadata.joined(separator: " · "))\n"
+                out += "  - \(labels.evidence): \(metadata.joined(separator: " · "))\n"
+            }
+        }
+    }
+
+    private struct MarkdownLabels {
+        let title: String
+        let tldr: String
+        let decisions: String
+        let actionItems: String
+        let owner: String
+        let deadline: String
+        let inferred: String
+        let openQuestions: String
+        let nextSteps: String
+        let risks: String
+        let sourceQuality: String
+        let evidence: String
+        let language: SummaryLanguage
+
+        init(language: SummaryLanguage) {
+            self.language = language
+            switch language {
+            case .english:
+                title = "Meeting Summary"
+                tldr = "TL;DR"
+                decisions = "Decisions"
+                actionItems = "Action Items"
+                owner = "Owner"
+                deadline = "Deadline"
+                inferred = "inferred"
+                openQuestions = "Open Questions"
+                nextSteps = "Next Steps"
+                risks = "Risks / Blockers"
+                sourceQuality = "Source Quality"
+                evidence = "Evidence"
+            case .simplifiedChinese:
+                title = "会议总结"
+                tldr = "摘要"
+                decisions = "决策"
+                actionItems = "行动项"
+                owner = "负责人"
+                deadline = "截止时间"
+                inferred = "推断"
+                openQuestions = "未决问题"
+                nextSteps = "下一步"
+                risks = "风险 / 阻碍"
+                sourceQuality = "来源质量"
+                evidence = "证据"
+            }
+        }
+
+        func confidence(_ confidence: SummaryConfidence) -> String {
+            switch language {
+            case .english:
+                return "\(confidence.rawValue.capitalized) confidence"
+            case .simplifiedChinese:
+                switch confidence {
+                case .high: return "高置信度"
+                case .medium: return "中等置信度"
+                case .low: return "低置信度"
+                }
             }
         }
     }

@@ -32,5 +32,21 @@ public enum MeetingExport {
         let markdownURL = directory.appendingPathComponent("summary.md")
         try encoder.encode(summary).write(to: jsonURL, options: .atomic)
         try summary.markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
+
+        // A regenerated English summary invalidates any prior translation.
+        let translatedJSONURL = directory.appendingPathComponent("summary.zh.json")
+        let translatedMarkdownURL = directory.appendingPathComponent("summary.zh.md")
+        try? FileManager.default.removeItem(at: translatedJSONURL)
+        try? FileManager.default.removeItem(at: translatedMarkdownURL)
+    }
+
+    public static func writeChineseSummary(_ summary: MeetingSummary, to directory: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let jsonURL = directory.appendingPathComponent("summary.zh.json")
+        let markdownURL = directory.appendingPathComponent("summary.zh.md")
+        try encoder.encode(summary).write(to: jsonURL, options: .atomic)
+        try summary.markdown(mode: .detailed, language: .simplifiedChinese)
+            .write(to: markdownURL, atomically: true, encoding: .utf8)
     }
 }

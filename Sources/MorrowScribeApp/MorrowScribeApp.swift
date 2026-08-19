@@ -34,6 +34,8 @@ final class ScribeViewModel: ObservableObject {
     @Published var isTranscribing = false
     @Published var isStopping = false
     @Published var isSummarizing = false
+    @Published var isTranslatingSummary = false
+    @Published var summaryLanguage: SummaryLanguage = .english
     @Published var autoSummarize: Bool {
         didSet {
             UserDefaults.standard.set(autoSummarize, forKey: Self.autoSummarizeDefaultsKey)
@@ -49,6 +51,7 @@ final class ScribeViewModel: ObservableObject {
     private var recordingStatus: RecordingStatus?
     private var activeMeetingDirectory: URL?
     private var summaryTask: Task<Void, Never>?
+    private var translationTask: Task<Void, Never>?
 
     enum DetailTab: String, CaseIterable, Identifiable {
         case transcript = "Transcript"
@@ -244,10 +247,52 @@ final class ScribeViewModel: ObservableObject {
         startSummary(directory: meeting.directory)
     }
 
+    func translateSummaryToChinese(_ meeting: SavedMeeting) {
+        guard let summary = meeting.structuredSummary,
+              translationTask == nil,
+              summaryTask == nil else { return }
+        isTranslatingSummary = true
+        errorText = nil
+        statusText = meeting.chineseSummary == nil ? "Translating summary…" : "Retranslating summary…"
+        let configuration = llmConfiguration
+        let directory = meeting.directory
+        translationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try Task.checkCancellation()
+                let translated = try await SummaryTranslator.translateToSimplifiedChinese(
+                    summary,
+                    configuration: configuration
+                )
+                try Task.checkCancellation()
+                try MeetingExport.writeChineseSummary(translated, to: directory)
+                self.statusText = "Chinese summary saved"
+                self.refreshLibraryKeepingSelection()
+                self.selectedMeetingID = directory.path
+                self.detailTab = .summary
+                self.summaryLanguage = .simplifiedChinese
+            } catch is CancellationError {
+                self.errorText = nil
+                self.statusText = "Summary translation stopped"
+            } catch {
+                self.errorText = String(describing: error)
+                self.statusText = "Summary translation failed"
+            }
+            self.translationTask = nil
+            self.isTranslatingSummary = false
+        }
+    }
+
     func cancelSummary() {
         guard let summaryTask else { return }
         statusText = "Stopping summary…"
         summaryTask.cancel()
+    }
+
+    func cancelSummaryTranslation() {
+        guard let translationTask else { return }
+        statusText = "Stopping translation…"
+        translationTask.cancel()
     }
 
     func saveLLMConfiguration(_ configuration: SummaryConfiguration) -> Bool {
@@ -263,7 +308,7 @@ final class ScribeViewModel: ObservableObject {
     }
 
     private func startSummary(directory: URL) {
-        guard summaryTask == nil else { return }
+        guard summaryTask == nil, translationTask == nil else { return }
         isSummarizing = true
         errorText = nil
         statusText = "Generating summary…"
@@ -289,6 +334,7 @@ final class ScribeViewModel: ObservableObject {
             try Task.checkCancellation()
             try MeetingExport.writeSummary(summary, to: directory)
             statusText = "Summary saved"
+            summaryLanguage = .english
             refreshLibraryKeepingSelection()
             selectedMeetingID = directory.path
             detailTab = .summary
@@ -470,6 +516,17 @@ struct ContentView: View {
                             .frame(width: 184)
                             .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                         }
+                        if model.detailTab == .summary, meeting.chineseSummary != nil {
+                            Picker("Summary language", selection: $model.summaryLanguage) {
+                                ForEach(SummaryLanguage.allCases) { language in
+                                    Text(language.rawValue).tag(language)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(width: 138)
+                            .help("Switch between the original English summary and the saved Simplified Chinese translation.")
+                        }
                         Toggle(isOn: $markdownPreviewEnabled) {
                             Label("Markdown", systemImage: "doc.richtext")
                         }
@@ -488,14 +545,15 @@ struct ContentView: View {
                     )
                 case .summary:
                     if markdownPreviewEnabled,
-                       let summaryMarkdown = meeting.structuredSummary?.markdown(mode: summaryPresentationMode) ?? meeting.summary,
+                       let summaryMarkdown = exportableSummaryMarkdown(for: meeting),
                        !summaryMarkdown.isEmpty {
                         MarkdownDocumentView(markdown: summaryMarkdown, preview: true)
                     } else {
                         SummaryDetailView(
-                            structuredSummary: meeting.structuredSummary,
+                            structuredSummary: displayedStructuredSummary(for: meeting),
                             legacySummary: meeting.summary,
-                            presentationMode: summaryPresentationMode
+                            presentationMode: summaryPresentationMode,
+                            language: effectiveSummaryLanguage(for: meeting)
                         )
                         .equatable()
                     }
@@ -522,6 +580,21 @@ struct ContentView: View {
             showRegenerateSummaryConfirmation = true
         } else {
             model.summarize(meeting)
+        }
+    }
+
+    private func effectiveSummaryLanguage(for meeting: SavedMeeting) -> SummaryLanguage {
+        model.summaryLanguage == .simplifiedChinese && meeting.chineseSummary != nil
+            ? .simplifiedChinese
+            : .english
+    }
+
+    private func displayedStructuredSummary(for meeting: SavedMeeting) -> MeetingSummary? {
+        switch effectiveSummaryLanguage(for: meeting) {
+        case .english:
+            return meeting.structuredSummary
+        case .simplifiedChinese:
+            return meeting.chineseSummary
         }
     }
 
@@ -582,6 +655,13 @@ struct ContentView: View {
                     Label("Stop Summary", systemImage: "stop.fill")
                 }
                 .help("Stop the summary generation currently in progress.")
+            } else if model.isTranslatingSummary {
+                Button(role: .destructive) {
+                    model.cancelSummaryTranslation()
+                } label: {
+                    Label("Stop Translation", systemImage: "stop.fill")
+                }
+                .help("Stop the summary translation currently in progress.")
             } else if model.llmConfigured {
                 Button {
                     requestSummaryGeneration(for: meeting)
@@ -589,6 +669,18 @@ struct ContentView: View {
                     Label("Generate Summary", systemImage: "sparkles")
                 }
                 .disabled(meeting.transcript.isEmpty)
+
+                if meeting.structuredSummary != nil {
+                    Button {
+                        model.translateSummaryToChinese(meeting)
+                    } label: {
+                        Label(
+                            meeting.chineseSummary == nil ? "Translate to Chinese" : "Retranslate Chinese",
+                            systemImage: "character.book.closed"
+                        )
+                    }
+                    .help("Translate the structured English summary to Simplified Chinese with the configured LLM.")
+                }
             } else {
                 Button {
                     showLLMSettings = true
@@ -639,7 +731,11 @@ struct ContentView: View {
     }
 
     private func exportableSummaryMarkdown(for meeting: SavedMeeting) -> String? {
-        let markdown = meeting.structuredSummary?.markdown(mode: summaryPresentationMode) ?? meeting.summary
+        let language = effectiveSummaryLanguage(for: meeting)
+        let markdown = displayedStructuredSummary(for: meeting)?.markdown(
+            mode: summaryPresentationMode,
+            language: language
+        ) ?? meeting.summary
         guard let markdown else { return nil }
         let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : markdown
@@ -897,11 +993,13 @@ private struct SummaryDetailView: View, Equatable {
     let structuredSummary: MeetingSummary?
     let legacySummary: String?
     let presentationMode: SummaryPresentationMode
+    let language: SummaryLanguage
 
     nonisolated static func == (lhs: SummaryDetailView, rhs: SummaryDetailView) -> Bool {
         lhs.structuredSummary == rhs.structuredSummary &&
             lhs.legacySummary == rhs.legacySummary &&
-            lhs.presentationMode == rhs.presentationMode
+            lhs.presentationMode == rhs.presentationMode &&
+            lhs.language == rhs.language
     }
 
     var body: some View {
@@ -909,10 +1007,10 @@ private struct SummaryDetailView: View, Equatable {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if !summary.tldr.isEmpty {
-                        summaryCard(title: "At a Glance", systemImage: "sparkles") {
+                        summaryCard(title: localized("At a Glance", "概览"), systemImage: "sparkles") {
                             VStack(alignment: .leading, spacing: 10) {
                                 ForEach(summary.tldr) { point in
-                                    SummaryPointView(point: point, prominent: true)
+                                    SummaryPointView(point: point, prominent: true, language: language)
                                 }
                             }
                         }
@@ -920,26 +1018,26 @@ private struct SummaryDetailView: View, Equatable {
 
                     VStack(alignment: .leading, spacing: 14) {
                         if !summary.decisions.isEmpty {
-                            pointCard(title: "Decisions", systemImage: "checkmark.seal", points: summary.decisions)
+                            pointCard(title: localized("Decisions", "决策"), systemImage: "checkmark.seal", points: summary.decisions)
                         }
                         if !summary.actionItems.isEmpty {
-                            summaryCard(title: "Action Items", systemImage: "checklist") {
+                            summaryCard(title: localized("Action Items", "行动项"), systemImage: "checklist") {
                                 VStack(alignment: .leading, spacing: 12) {
                                     ForEach(summary.actionItems) { item in
-                                        SummaryActionItemView(item: item)
+                                        SummaryActionItemView(item: item, language: language)
                                     }
                                 }
                             }
                         }
                         if !summary.openQuestions.isEmpty {
-                            pointCard(title: "Open Questions", systemImage: "questionmark.circle", points: summary.openQuestions)
+                            pointCard(title: localized("Open Questions", "未决问题"), systemImage: "questionmark.circle", points: summary.openQuestions)
                         }
                         if presentationMode == .detailed {
                             if !summary.nextSteps.isEmpty {
-                                pointCard(title: "Next Steps", systemImage: "arrow.right.circle", points: summary.nextSteps)
+                                pointCard(title: localized("Next Steps", "下一步"), systemImage: "arrow.right.circle", points: summary.nextSteps)
                             }
                             if !summary.risks.isEmpty {
-                                pointCard(title: "Risks / Blockers", systemImage: "exclamationmark.triangle", points: summary.risks)
+                                pointCard(title: localized("Risks / Blockers", "风险 / 阻碍"), systemImage: "exclamationmark.triangle", points: summary.risks)
                             }
                         }
                     }
@@ -950,7 +1048,7 @@ private struct SummaryDetailView: View, Equatable {
                         }
 
                         if !summary.sourceWarnings.isEmpty {
-                            summaryCard(title: "Source Quality", systemImage: "waveform.badge.exclamationmark") {
+                            summaryCard(title: localized("Source Quality", "来源质量"), systemImage: "waveform.badge.exclamationmark") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(summary.sourceWarnings, id: \.self) { warning in
                                         Label(warning, systemImage: "info.circle")
@@ -966,7 +1064,7 @@ private struct SummaryDetailView: View, Equatable {
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .top)
             }
-            .id(presentationMode)
+            .id("\(presentationMode.rawValue)-\(language.rawValue)")
         } else if let legacySummary, !legacySummary.isEmpty {
             MarkdownDocumentView(markdown: legacySummary, preview: false)
         } else {
@@ -982,10 +1080,14 @@ private struct SummaryDetailView: View, Equatable {
         summaryCard(title: title, systemImage: systemImage) {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(points) { point in
-                    SummaryPointView(point: point)
+                    SummaryPointView(point: point, language: language)
                 }
             }
         }
+    }
+
+    private func localized(_ english: String, _ chinese: String) -> String {
+        language == .simplifiedChinese ? chinese : english
     }
 
     private func summaryCard<Content: View>(
@@ -1011,6 +1113,7 @@ private struct SummaryDetailView: View, Equatable {
 private struct SummaryPointView: View {
     let point: SummaryPoint
     var prominent = false
+    let language: SummaryLanguage
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -1023,7 +1126,7 @@ private struct SummaryPointView: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            SummaryEvidenceView(evidence: point.evidence, confidence: point.confidence)
+            SummaryEvidenceView(evidence: point.evidence, confidence: point.confidence, language: language)
                 .padding(.leading, 15)
         }
     }
@@ -1031,6 +1134,7 @@ private struct SummaryPointView: View {
 
 private struct SummaryActionItemView: View {
     let item: SummaryActionItem
+    let language: SummaryLanguage
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1050,14 +1154,14 @@ private struct SummaryActionItemView: View {
                         Label(deadline, systemImage: "calendar")
                     }
                     if item.explicitness == .inferred {
-                        Label("Inferred", systemImage: "wand.and.stars")
+                        Label(language == .simplifiedChinese ? "推断" : "Inferred", systemImage: "wand.and.stars")
                     }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 28)
             }
-            SummaryEvidenceView(evidence: item.evidence, confidence: item.confidence)
+            SummaryEvidenceView(evidence: item.evidence, confidence: item.confidence, language: language)
                 .padding(.leading, 28)
         }
     }
@@ -1066,6 +1170,7 @@ private struct SummaryActionItemView: View {
 private struct SummaryEvidenceView: View {
     let evidence: [SummaryEvidence]
     let confidence: SummaryConfidence
+    let language: SummaryLanguage
     @State private var isExpanded = false
 
     private func metadata(for evidence: SummaryEvidence) -> String {
@@ -1099,9 +1204,9 @@ private struct SummaryEvidenceView: View {
                 .padding(.top, 4)
             } label: {
                 HStack(spacing: 6) {
-                    Text("\(evidence.count) source\(evidence.count == 1 ? "" : "s")")
+                    Text(sourceLabel)
                     if confidence != .high {
-                        Text("· \(confidence.rawValue.capitalized) confidence")
+                        Text("· \(confidenceLabel)")
                     }
                 }
                 .font(.caption2)
@@ -1109,9 +1214,29 @@ private struct SummaryEvidenceView: View {
             }
             .controlSize(.small)
         } else if confidence != .high {
-            Text("\(confidence.rawValue.capitalized) confidence · no verified source quote")
+            Text(language == .simplifiedChinese
+                 ? "\(confidenceLabel) · 无已验证的来源引用"
+                 : "\(confidenceLabel) · no verified source quote")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var sourceLabel: String {
+        if language == .simplifiedChinese {
+            return "\(evidence.count) 条来源"
+        }
+        return "\(evidence.count) source\(evidence.count == 1 ? "" : "s")"
+    }
+
+    private var confidenceLabel: String {
+        if language == .english {
+            return "\(confidence.rawValue.capitalized) confidence"
+        }
+        switch confidence {
+        case .high: return "高置信度"
+        case .medium: return "中等置信度"
+        case .low: return "低置信度"
         }
     }
 }

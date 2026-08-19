@@ -20,13 +20,15 @@ public struct SavedMeeting: Identifiable, Hashable, Sendable {
     public let transcript: String
     public let summary: String?
     public let structuredSummary: MeetingSummary?
+    public let chineseSummary: MeetingSummary?
 
     public init(
         directory: URL,
         metadata: MeetingMetadata,
         transcript: String,
         summary: String?,
-        structuredSummary: MeetingSummary? = nil
+        structuredSummary: MeetingSummary? = nil,
+        chineseSummary: MeetingSummary? = nil
     ) {
         self.id = directory.path
         self.directory = directory
@@ -34,6 +36,7 @@ public struct SavedMeeting: Identifiable, Hashable, Sendable {
         self.transcript = transcript
         self.summary = summary
         self.structuredSummary = structuredSummary
+        self.chineseSummary = chineseSummary
     }
 }
 
@@ -149,6 +152,7 @@ public enum MeetingLibrary {
         let transcriptURL = directory.appendingPathComponent("transcript.md")
         let summaryURL = directory.appendingPathComponent("summary.md")
         let structuredSummaryURL = directory.appendingPathComponent("summary.json")
+        let chineseSummaryURL = directory.appendingPathComponent("summary.zh.json")
         let transcript = (try? String(contentsOf: transcriptURL, encoding: .utf8)) ?? ""
         let summary = FileManager.default.fileExists(atPath: summaryURL.path)
             ? try? String(contentsOf: summaryURL, encoding: .utf8)
@@ -159,12 +163,19 @@ public enum MeetingLibrary {
         } else {
             structuredSummary = nil
         }
+        let chineseSummary: MeetingSummary?
+        if FileManager.default.fileExists(atPath: chineseSummaryURL.path) {
+            chineseSummary = try? JSONDecoder().decode(MeetingSummary.self, from: Data(contentsOf: chineseSummaryURL))
+        } else {
+            chineseSummary = nil
+        }
         return SavedMeeting(
             directory: directory,
             metadata: metadata,
             transcript: transcript,
             summary: summary,
-            structuredSummary: structuredSummary
+            structuredSummary: structuredSummary,
+            chineseSummary: chineseSummary
         )
     }
 }
