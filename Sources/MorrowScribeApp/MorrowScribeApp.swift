@@ -520,7 +520,7 @@ struct ContentView: View {
                         .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                     }
 
-                    if model.detailTab == .summary, meeting.structuredSummary != nil {
+                    if meeting.structuredSummary != nil {
                         Picker("Summary language", selection: summaryLanguageBinding(for: meeting)) {
                             Text(SummaryLanguage.english.rawValue).tag(SummaryLanguage.english)
                             Text(meeting.chineseSummary == nil ? "Translate" : SummaryLanguage.simplifiedChinese.rawValue)
@@ -601,6 +601,7 @@ struct ContentView: View {
                     model.translateSummaryToChinese(meeting)
                 } else {
                     model.summaryLanguage = language
+                    model.detailTab = .summary
                 }
             }
         )
