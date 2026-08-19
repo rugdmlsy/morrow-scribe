@@ -369,6 +369,9 @@ struct ContentView: View {
             detail
         }
         .toolbar { toolbar }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            statusBar
+        }
         .alert("Morrow Scribe", isPresented: Binding(
             get: { model.errorText != nil },
             set: { if !$0 { model.errorText = nil } }
@@ -520,7 +523,7 @@ struct ContentView: View {
                         .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                     }
 
-                    if meeting.structuredSummary != nil {
+                    if model.detailTab == .summary, meeting.structuredSummary != nil {
                         Picker("Summary language", selection: summaryLanguageBinding(for: meeting)) {
                             Text(SummaryLanguage.english.rawValue).tag(SummaryLanguage.english)
                             Text(meeting.chineseSummary == nil ? "Translate" : SummaryLanguage.simplifiedChinese.rawValue)
@@ -601,7 +604,6 @@ struct ContentView: View {
                     model.translateSummaryToChinese(meeting)
                 } else {
                     model.summaryLanguage = language
-                    model.detailTab = .summary
                 }
             }
         )
@@ -813,10 +815,26 @@ struct ContentView: View {
                       ? "Generate summary.md automatically after transcription stops."
                       : "Configure a summary provider to enable automatic summaries.")
 
-            Text(model.statusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 180, alignment: .trailing)
+        }
+    }
+
+    private var statusBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                if model.isTranscribing || model.isStopping || model.isSummarizing || model.isTranslatingSummary {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+                Text(model.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 26)
+            .background(.bar)
         }
     }
 }
