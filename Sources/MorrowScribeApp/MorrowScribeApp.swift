@@ -494,45 +494,51 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 meetingHeader(meeting)
                 Divider()
-                ZStack {
+                HStack(spacing: 12) {
                     Picker("Content", selection: $model.detailTab) {
                         ForEach(ScribeViewModel.DetailTab.allCases) { tab in
                             Text(tab.rawValue).tag(tab)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 320)
+                    .labelsHidden()
+                    .frame(width: 280)
+                    .layoutPriority(2)
 
-                    HStack {
-                        Spacer()
-                        if model.detailTab == .summary, meeting.structuredSummary != nil {
-                            Picker("Summary detail", selection: $summaryPresentationMode) {
-                                ForEach(SummaryPresentationMode.allCases) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
+                    Spacer(minLength: 8)
+
+                    if model.detailTab == .summary, meeting.structuredSummary != nil {
+                        Picker("Summary detail", selection: $summaryPresentationMode) {
+                            ForEach(SummaryPresentationMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
                             }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            .frame(width: 184)
-                            .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                         }
-                        if model.detailTab == .summary, meeting.chineseSummary != nil {
-                            Picker("Summary language", selection: $model.summaryLanguage) {
-                                ForEach(SummaryLanguage.allCases) { language in
-                                    Text(language.rawValue).tag(language)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            .frame(width: 138)
-                            .help("Switch between the original English summary and the saved Simplified Chinese translation.")
-                        }
-                        Toggle(isOn: $markdownPreviewEnabled) {
-                            Label("Markdown", systemImage: "doc.richtext")
-                        }
-                        .toggleStyle(.button)
-                        .help(markdownPreviewEnabled ? "Show standard view" : "Render Markdown preview")
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 160)
+                        .layoutPriority(1)
+                        .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                     }
+
+                    if model.detailTab == .summary, meeting.chineseSummary != nil {
+                        Picker("Summary language", selection: $model.summaryLanguage) {
+                            ForEach(SummaryLanguage.allCases) { language in
+                                Text(language.rawValue).tag(language)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 124)
+                        .layoutPriority(1)
+                        .help("Switch between the original English summary and the saved Simplified Chinese translation.")
+                    }
+
+                    Toggle(isOn: $markdownPreviewEnabled) {
+                        Label("Markdown", systemImage: "doc.richtext")
+                    }
+                    .toggleStyle(.button)
+                    .fixedSize()
+                    .help(markdownPreviewEnabled ? "Show standard view" : "Render Markdown preview")
                 }
                 .padding(12)
 
