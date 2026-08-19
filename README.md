@@ -70,7 +70,8 @@ The GUI provides:
 - Manual `Generate Summary` and `Auto summary` controls with either Codex CLI or an OpenAI-compatible API
 - In-app summary-provider settings with a lightweight connection test; API keys are stored in macOS Keychain
 - `Auto summary` preference persists across app launches
-- Structured summary preview with decisions, action items, next steps, open questions, risks, topic notes, evidence, and confidence
+- Structured English summary preview with decisions, action items, next steps, open questions, risks, topic notes, evidence, and confidence
+- Copy/export the current concise or detailed summary as Markdown or PDF
 
 Because the GUI is its own macOS application, it needs its own Accessibility permission before it can read Slack captions. Use **Request Access** in the toolbar and enable Morrow Scribe under **System Settings → Privacy & Security → Accessibility**. The app bundle is signed with a stable designated requirement (`identifier "com.morrow.scribe"`) so rebuilding/updating the local app no longer invalidates the Accessibility grant. If upgrading from a build created before this fix, remove the old Accessibility entry and add `~/Applications/Morrow Scribe.app` once to replace the stale CDHash-based grant.
 
@@ -104,7 +105,7 @@ export MORROW_SCRIBE_CODEX_PATH="$HOME/.local/bin/codex"
 export MORROW_SCRIBE_CODEX_MODEL=<model>
 ```
 
-The summarizer first requests grounded structured JSON and persists both `summary.json` and a portable `summary.md`. The prompt explicitly distinguishes decisions from discussion, requires owners/deadlines to be transcript-supported, prefers empty fields over guesses, and can attach speaker/timestamp/quote evidence plus confidence to important items.
+The summarizer first requests grounded structured JSON and persists both `summary.json` and a portable `summary.md`. Summary prose is always generated in English regardless of transcript language, while source evidence retains the original transcript text. The prompt explicitly distinguishes decisions from discussion, requires owners/deadlines to be transcript-supported, prefers empty fields over guesses, and can attach speaker/timestamp/quote evidence plus confidence to important items.
 
 Long transcripts are split into bounded chunks, summarized on one meeting-wide timestamp axis, and then merged through one or more reduction passes. Evidence is checked again in code after every model pass: a quoted citation must match an actual transcript entry, and Morrow Scribe rewrites its speaker/timestamp from the matched entry. Unmatched model citations are removed, their item confidence is lowered, and the summary records a source-quality warning instead of presenting fabricated evidence.
 

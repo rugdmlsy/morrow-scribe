@@ -173,6 +173,7 @@ public enum MorrowScribeSelfTest {
               prompt.contains("A decision is something actually agreed/decided"),
               prompt.contains("evidenceRefs"),
               prompt.contains("Do not inherit a nearby deadline"),
+              prompt.contains("ALL generated human-readable summary content in English"),
               prompt.contains("[E1] [00:00] [Alice] [slack_ax_side_by_side] We will ship Friday."),
               prompt.contains("[E2] [01:05] [Bob] [zoom_native_caption] I'll update the prototype tomorrow.") else {
             throw SelfTestError.failed("summary prompt contract failed")

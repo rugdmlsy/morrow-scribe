@@ -450,7 +450,7 @@ public enum SummaryClient {
         let prompt = """
         You are Morrow Scribe's final summary polisher. The FACTS below are immutable, already grounded meeting atoms.
 
-        Rewrite them into 3-5 short, clear summary sentences in the same dominant language as the facts.
+        Rewrite them into 3-5 short, clear English summary sentences, regardless of the language used in FACTS.
         Lead with the meeting's scope/outcome, then the most important decisions, then the most important committed next step.
 
         STRICT RULES:
@@ -459,6 +459,7 @@ public enum SummaryClient {
         - A sentence may combine facts only when all needed sourceIDs are listed.
         - Do not change the status of a proposal, decision, question, risk, or commitment.
         - Do not infer deadlines or owners.
+        - Every generated summary sentence must be in English. Preserve proper nouns, product names, code identifiers, commands, filenames, and technical terms when translating them would reduce precision.
         - No filler, headings, Markdown, or chronology narration.
         - Prefer fewer sentences when they cover the important outcome cleanly.
 

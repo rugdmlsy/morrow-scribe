@@ -597,6 +597,32 @@ struct ContentView: View {
                 }
                 .help("Choose Codex CLI or an OpenAI-compatible API for meeting summaries.")
             }
+            if exportableSummaryMarkdown(for: meeting) != nil {
+                Menu {
+                    Button {
+                        copySummary(meeting)
+                    } label: {
+                        Label("Copy Summary", systemImage: "doc.on.doc")
+                    }
+
+                    Divider()
+
+                    Button {
+                        exportSummary(meeting, format: .markdown)
+                    } label: {
+                        Label("Export Markdown…", systemImage: "doc.plaintext")
+                    }
+
+                    Button {
+                        exportSummary(meeting, format: .pdf)
+                    } label: {
+                        Label("Export PDF…", systemImage: "doc.richtext")
+                    }
+                } label: {
+                    Label("Export Summary", systemImage: "square.and.arrow.up")
+                }
+                .help("Copy or export the currently selected \(summaryPresentationMode.rawValue.lowercased()) summary.")
+            }
             Button {
                 showLLMSettings = true
             } label: {
@@ -610,6 +636,35 @@ struct ContentView: View {
             }
         }
         .padding(16)
+    }
+
+    private func exportableSummaryMarkdown(for meeting: SavedMeeting) -> String? {
+        let markdown = meeting.structuredSummary?.markdown(mode: summaryPresentationMode) ?? meeting.summary
+        guard let markdown else { return nil }
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : markdown
+    }
+
+    private func copySummary(_ meeting: SavedMeeting) {
+        guard let markdown = exportableSummaryMarkdown(for: meeting) else { return }
+        SummaryExporter.copy(markdown: markdown)
+        model.statusText = "Summary copied"
+    }
+
+    private func exportSummary(_ meeting: SavedMeeting, format: SummaryExportFormat) {
+        guard let markdown = exportableSummaryMarkdown(for: meeting) else { return }
+        do {
+            let exported = try SummaryExporter.export(
+                markdown: markdown,
+                suggestedBaseName: meeting.metadata.title,
+                format: format
+            )
+            if exported {
+                model.statusText = "Summary exported"
+            }
+        } catch {
+            model.errorText = "Could not export summary: \(error.localizedDescription)"
+        }
     }
 
     @ToolbarContentBuilder

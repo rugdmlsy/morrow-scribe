@@ -808,14 +808,14 @@ public enum MeetingSummaryPrompt {
         - A decision is something actually agreed/decided, not merely discussed, proposed, or considered. If one speaker proposes something and another later accepts it, include BOTH the proposal and acceptance as evidence.
         - An action item is a concrete task or commitment. Set explicitness="explicit" only when the transcript clearly commits someone to it. A suggestion such as “you can”, “could”, “maybe”, or a proposed measurement is NOT an action item unless someone accepts/commits to it.
         - Prefer one complete action item per deliverable. If one speaker makes a compound commitment in one turn (for example task pool + experiment run + failure matrix under the same deadline), keep it together rather than fragmenting it into several overlapping actions. If a later turn adds details to the same deliverable, combine them into the same action when possible.
-        - Before returning JSON, scan the transcript once more for explicit first-person commitments such as “我会…”, “我来…”, “I will…”, or “I'll…”. Preserve every materially distinct commitment as an action item even when it has no deadline; do not drop a real commitment merely because it is lower priority than the main deliverable.
+        - Before returning JSON, scan the transcript once more for explicit first-person commitments such as “I will…”, “I'll…”, “I can take…”, or equivalent commitment language in the transcript. Preserve every materially distinct commitment as an action item even when it has no deadline; do not drop a real commitment merely because it is lower priority than the main deliverable.
         - owner and deadline must be null unless directly supported by evidence for that action. Do not inherit a nearby deadline just because it appears in the same discussion. A deadline may be carried across turns only when an explicit referent clearly applies it to that same action/deliverable.
         - Preserve technical terms and proper nouns when the transcript supports them. Correct obvious caption errors only when context makes the correction unambiguous.
         - Every transcript turn has an immutable evidence ID such as E14. Every factual atom must return 1-3 exact evidenceRefs from the transcript. Never copy or rewrite transcript quotes yourself; Morrow Scribe resolves IDs back to exact quotes after generation. Do not omit an otherwise important supported atom merely because choosing its evidence ID takes extra care.
         - Use multiple evidenceRefs whenever a claim combines facts from different turns or needs proposal + confirmation to establish a decision. The cited turns together must directly support the whole claim.
         - Use confidence="low" when captions are ambiguous, speaker attribution is uncertain, or the conclusion requires interpretation.
         - Avoid filler such as “the meeting discussed”, “various topics”, or generic restatements.
-        - Write extracted text in the dominant language of the transcript, while preserving technical terms in their natural form.
+        - Write ALL generated human-readable summary content in English, regardless of the transcript language. Translate faithfully into concise, natural English. Preserve proper nouns, product names, code identifiers, commands, filenames, and technical terms when translating them would reduce precision. Evidence quotes are resolved separately from evidenceRefs and may remain in the transcript's original language.
         - Avoid duplicating the same fact across decisions, actionItems, nextSteps, risks, and sections. TL;DR may intentionally summarize the most important core facts.
 
         CONTENT RULES:
@@ -823,7 +823,7 @@ public enum MeetingSummaryPrompt {
         - decisions: only actual decisions/agreement.
         - actionItems: tasks/commitments, with owner/deadline only when directly supported.
         - nextSteps: future directions or intended follow-ups that are useful but are not assigned action items.
-        - openQuestions: only questions that remain unresolved at the END of the transcript. Read later turns before classifying: if a later speaker gives a concrete answer, policy, conditional permission, or decision (for example “可以做 X，但要 Y”), the earlier question is answered and must NOT remain in openQuestions; put any resulting conditional work in nextSteps instead.
+        - openQuestions: only questions that remain unresolved at the END of the transcript. Read later turns before classifying: if a later speaker gives a concrete answer, policy, conditional permission, or decision (for example “We can do X, but only if Y”), the earlier question is answered and must NOT remain in openQuestions; put any resulting conditional work in nextSteps instead.
         - Explicit research questions that the group says the experiments/paper should ultimately answer ARE openQuestions when the meeting does not answer them, even if they are phrased as “we want to answer…” rather than with a question mark.
         - risks: explicit blockers, risks, concerns, or uncertainties that could materially affect the work. Do not turn every hypothetical downside into a risk.
         - sections: 0-4 topic-specific sections only when they add detail not already captured by core atoms.
@@ -867,6 +867,7 @@ public enum MeetingSummaryPrompt {
         Your previous JSON used one or more evidenceRefs that do not exist in this transcript chunk.
         Valid IDs are E1 through E\(max(1, validEvidenceCount)). Re-read the [E…] labels above and repair the references.
         Preserve every supported factual atom from the previous response. Do NOT drop a decision, action, question, risk, or takeaway merely because its evidence ID was wrong. Change factual text only if the transcript itself requires a correction.
+        Keep all generated human-readable summary content in English.
         Every returned factual atom must cite at least one valid evidenceRef.
 
         Previous response to repair:
