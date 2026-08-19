@@ -26,8 +26,6 @@ struct MorrowScribeDesktopApp: App {
 
 @MainActor
 final class ScribeViewModel: ObservableObject {
-    private static let autoSummarizeDefaultsKey = "summary.autoSummarize"
-
     @Published var meetings: [SavedMeeting] = []
     @Published var selectedMeetingID: String?
     @Published var meetingTitle = "Meeting"
@@ -36,11 +34,6 @@ final class ScribeViewModel: ObservableObject {
     @Published var isSummarizing = false
     @Published var isTranslatingSummary = false
     @Published var summaryLanguage: SummaryLanguage = .english
-    @Published var autoSummarize: Bool {
-        didSet {
-            UserDefaults.standard.set(autoSummarize, forKey: Self.autoSummarizeDefaultsKey)
-        }
-    }
     @Published var statusText = "Ready"
     @Published var errorText: String?
     @Published var detailTab: DetailTab = .transcript
@@ -60,7 +53,6 @@ final class ScribeViewModel: ObservableObject {
     }
 
     init() {
-        autoSummarize = UserDefaults.standard.bool(forKey: Self.autoSummarizeDefaultsKey)
         refreshLibraryKeepingSelection()
     }
 
@@ -152,7 +144,6 @@ final class ScribeViewModel: ObservableObject {
             statusText = runtimeStatus.current
             refreshLibraryKeepingSelection()
 
-            let autoSummary = autoSummarize
             Task { [weak self] in
                 let errorMessage = await Task.detached { () -> String? in
                     let recording = RecordingSession(
@@ -172,7 +163,6 @@ final class ScribeViewModel: ObservableObject {
                 guard let self else { return }
                 self.collectorControl = nil
                 self.recordingStatus = nil
-                let finishedDirectory = self.activeMeetingDirectory
                 self.activeMeetingDirectory = nil
                 self.isTranscribing = false
                 self.isStopping = false
@@ -183,9 +173,6 @@ final class ScribeViewModel: ObservableObject {
                     self.statusText = "Recording saved"
                 }
                 self.refreshLibraryKeepingSelection()
-                if autoSummary, self.llmConfigured, let finishedDirectory {
-                    self.startSummary(directory: finishedDirectory)
-                }
             }
         } catch {
             errorText = String(describing: error)
@@ -823,12 +810,6 @@ struct ContentView: View {
                     Label("Start", systemImage: "record.circle")
                 }
             }
-
-            Toggle("Auto summary", isOn: $model.autoSummarize)
-                .disabled(!model.llmConfigured || model.isTranscribing)
-                .help(model.llmConfigured
-                      ? "Generate summary.md automatically after transcription stops."
-                      : "Configure a summary provider to enable automatic summaries.")
 
         }
     }
