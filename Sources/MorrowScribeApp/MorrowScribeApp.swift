@@ -520,17 +520,19 @@ struct ContentView: View {
                         .help("Concise shows outcomes, decisions, actions, and unresolved questions. Detailed adds risks, next steps, technical sections, and source warnings.")
                     }
 
-                    if model.detailTab == .summary, meeting.chineseSummary != nil {
-                        Picker("Summary language", selection: $model.summaryLanguage) {
-                            ForEach(SummaryLanguage.allCases) { language in
-                                Text(language.rawValue).tag(language)
-                            }
+                    if model.detailTab == .summary, meeting.structuredSummary != nil {
+                        Picker("Summary language", selection: summaryLanguageBinding(for: meeting)) {
+                            Text(SummaryLanguage.english.rawValue).tag(SummaryLanguage.english)
+                            Text(meeting.chineseSummary == nil ? "Translate" : SummaryLanguage.simplifiedChinese.rawValue)
+                                .tag(SummaryLanguage.simplifiedChinese)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        .frame(width: 124)
+                        .frame(width: 138)
                         .layoutPriority(1)
-                        .help("Switch between the original English summary and the saved Simplified Chinese translation.")
+                        .help(meeting.chineseSummary == nil
+                              ? "Translate this summary to Simplified Chinese."
+                              : "Switch between the English summary and the saved Simplified Chinese translation.")
                     }
 
                     Toggle(isOn: $markdownPreviewEnabled) {
@@ -587,6 +589,21 @@ struct ContentView: View {
         } else {
             model.summarize(meeting)
         }
+    }
+
+    private func summaryLanguageBinding(for meeting: SavedMeeting) -> Binding<SummaryLanguage> {
+        Binding(
+            get: {
+                meeting.chineseSummary == nil ? .english : model.summaryLanguage
+            },
+            set: { language in
+                if language == .simplifiedChinese, meeting.chineseSummary == nil {
+                    model.translateSummaryToChinese(meeting)
+                } else {
+                    model.summaryLanguage = language
+                }
+            }
+        )
     }
 
     private func effectiveSummaryLanguage(for meeting: SavedMeeting) -> SummaryLanguage {
@@ -675,18 +692,6 @@ struct ContentView: View {
                     Label("Generate Summary", systemImage: "sparkles")
                 }
                 .disabled(meeting.transcript.isEmpty)
-
-                if meeting.structuredSummary != nil {
-                    Button {
-                        model.translateSummaryToChinese(meeting)
-                    } label: {
-                        Label(
-                            meeting.chineseSummary == nil ? "Translate to Chinese" : "Retranslate Chinese",
-                            systemImage: "character.book.closed"
-                        )
-                    }
-                    .help("Translate the structured English summary to Simplified Chinese with the configured LLM.")
-                }
             } else {
                 Button {
                     showLLMSettings = true
