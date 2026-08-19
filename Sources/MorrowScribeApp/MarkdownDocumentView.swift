@@ -56,7 +56,6 @@ struct MarkdownDocumentView: NSViewRepresentable {
             let modeChanged = previousPreview != preview
             let contentChanged = previousMarkdown != markdown
             if !modeChanged, !contentChanged {
-                scrollView.sizeDocumentView()
                 return
             }
 
@@ -83,6 +82,7 @@ struct MarkdownDocumentView: NSViewRepresentable {
             previousMarkdown = markdown
             previousPreview = preview
             hasRendered = true
+            scrollView.invalidateDocumentSize()
             scrollView.sizeDocumentView()
 
             let newDocumentHeight = textView.frame.height
@@ -102,9 +102,16 @@ struct MarkdownDocumentView: NSViewRepresentable {
 }
 
 final class MarkdownScrollView: NSScrollView {
+    private var documentSizeInvalidated = true
+    private var lastSizedViewport = NSSize(width: -1, height: -1)
+
     override func layout() {
         super.layout()
         sizeDocumentView()
+    }
+
+    func invalidateDocumentSize() {
+        documentSizeInvalidated = true
     }
 
     func sizeDocumentView() {
@@ -113,6 +120,10 @@ final class MarkdownScrollView: NSScrollView {
               let layoutManager = textView.layoutManager else { return }
 
         let viewport = contentView.bounds.size
+        let viewportChanged = abs(viewport.width - lastSizedViewport.width) > 0.5 ||
+            abs(viewport.height - lastSizedViewport.height) > 0.5
+        guard documentSizeInvalidated || viewportChanged else { return }
+
         let width = max(1, viewport.width)
         let minimumHeight = max(1, viewport.height)
         let horizontalInsets = textView.textContainerInset.width * 2
@@ -131,6 +142,8 @@ final class MarkdownScrollView: NSScrollView {
         if textView.frame != targetFrame {
             textView.frame = targetFrame
         }
+        lastSizedViewport = viewport
+        documentSizeInvalidated = false
     }
 }
 

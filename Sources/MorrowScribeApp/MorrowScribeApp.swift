@@ -548,26 +548,35 @@ struct ContentView: View {
                 .padding(12)
 
                 Divider()
-                switch model.detailTab {
-                case .transcript:
+                ZStack {
                     MarkdownDocumentView(
                         markdown: meeting.transcript.isEmpty ? "No transcript content yet." : meeting.transcript,
                         preview: markdownPreviewEnabled
                     )
-                case .summary:
-                    if markdownPreviewEnabled,
-                       let summaryMarkdown = exportableSummaryMarkdown(for: meeting),
-                       !summaryMarkdown.isEmpty {
-                        MarkdownDocumentView(markdown: summaryMarkdown, preview: true)
-                    } else {
-                        SummaryDetailView(
-                            structuredSummary: displayedStructuredSummary(for: meeting),
-                            legacySummary: meeting.summary,
-                            presentationMode: summaryPresentationMode,
-                            language: effectiveSummaryLanguage(for: meeting)
-                        )
-                        .equatable()
+                        .opacity(model.detailTab == .transcript ? 1 : 0)
+                        .allowsHitTesting(model.detailTab == .transcript)
+                        .accessibilityHidden(model.detailTab != .transcript)
+                        .zIndex(model.detailTab == .transcript ? 1 : 0)
+
+                    Group {
+                        if markdownPreviewEnabled,
+                           let summaryMarkdown = exportableSummaryMarkdown(for: meeting),
+                           !summaryMarkdown.isEmpty {
+                            MarkdownDocumentView(markdown: summaryMarkdown, preview: true)
+                        } else {
+                            SummaryDetailView(
+                                structuredSummary: displayedStructuredSummary(for: meeting),
+                                legacySummary: meeting.summary,
+                                presentationMode: summaryPresentationMode,
+                                language: effectiveSummaryLanguage(for: meeting)
+                            )
+                            .equatable()
+                        }
                     }
+                    .opacity(model.detailTab == .summary ? 1 : 0)
+                    .allowsHitTesting(model.detailTab == .summary)
+                    .accessibilityHidden(model.detailTab != .summary)
+                    .zIndex(model.detailTab == .summary ? 1 : 0)
                 }
             }
         } else {
@@ -703,7 +712,7 @@ struct ContentView: View {
                 }
                 .help("Choose Codex CLI or an OpenAI-compatible API for meeting summaries.")
             }
-            if exportableSummaryMarkdown(for: meeting) != nil {
+            if hasExportableSummary(meeting) {
                 Menu {
                     Button {
                         copySummary(meeting)
@@ -753,6 +762,12 @@ struct ContentView: View {
         guard let markdown else { return nil }
         let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : markdown
+    }
+
+    private func hasExportableSummary(_ meeting: SavedMeeting) -> Bool {
+        if meeting.structuredSummary != nil { return true }
+        guard let summary = meeting.summary else { return false }
+        return !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func copySummary(_ meeting: SavedMeeting) {
